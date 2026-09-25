@@ -51,6 +51,7 @@ final class Draft: ObservableObject {
 
     init() {
         let arguments = CommandLine.arguments
+        changedOnly = arguments.contains("--changed-only")
         guard let index = arguments.firstIndex(of: "--draft"), arguments.indices.contains(index + 1) else { return }
         do {
             let url = URL(fileURLWithPath: arguments[index + 1])
@@ -265,20 +266,22 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
+                HStack(spacing: 10) {
                     Text("MANUSCRIPT").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button(action: { draft.changedOnly.toggle() }) {
                         Image(systemName: draft.changedOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                             .foregroundStyle(draft.changedOnly ? Color.accentColor : Color.secondary)
                     }
+                    .frame(width: 24, height: 24)
                     .buttonStyle(.plain)
                     .help(draft.changedOnly ? "Show all files" : "Show only files with local changes")
                     .accessibilityLabel("Filter changed files")
                     .accessibilityValue(draft.changedOnly ? "On" : "Off")
                     Button(action: { draft.refreshRepository() }) { Image(systemName: "arrow.clockwise") }
+                        .frame(width: 24, height: 24)
                         .buttonStyle(.plain).help("Refresh local changes")
-                }.padding(.horizontal, 16).padding(.top, 20)
+                }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
                 if draft.repository != nil {
                     List(selection: Binding<String?>(get: { draft.sidebarPath }, set: { path in
                         if let file = draft.repository?.files.first(where: { $0.path == path }) { draft.selectFile(file) }
@@ -407,9 +410,11 @@ struct NativeEditor: NSViewRepresentable {
             for span in document.spans {
                 switch span.kind {
                 case .original:
+                    result.addAttribute(.toolTip, value: "Original committed text", range: span.display)
                     result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13), range: span.display)
                     result.addAttribute(.foregroundColor, value: NSColor.labelColor.withAlphaComponent(0.75), range: span.display)
                 case .current:
+                    result.addAttribute(.toolTip, value: "Current draft · click to edit", range: span.display)
                     result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.14), range: span.display)
                 case .label:
                     result.addAttributes([.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor], range: span.display)

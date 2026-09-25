@@ -49,11 +49,9 @@ public struct ReviewDocument: Sendable {
                 while right < after.count && inserted.contains(right) { new += after[right]; right += 1 }
                 if !output.isEmpty && !output.hasSuffix("\n") { append("\n", .label) }
                 if !old.isEmpty {
-                    append("− ORIGINAL\n", .label)
                     append(old, .original)
                     if !old.hasSuffix("\n") { append("\n", .label) }
                 }
-                append("+ CURRENT · EDIT HERE\n", .label)
                 append(new, .current, source: NSRange(location: position, length: new.utf16.count))
                 position += new.utf16.count
                 if !new.hasSuffix("\n") { append("\n", .label) }
