@@ -16,4 +16,4 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-open "$app"
+open "$app" --args "$@"

@@ -33,8 +33,25 @@ final class Draft: ObservableObject {
     @Published var calculating = false
     @Published var error: String?
     weak var editor: NSTextView?
+    var editorCoordinator: NativeEditor.Coordinator?
     private var calculation: Task<Void, Never>?
     private var savedText = sampleDraft
+
+    init() {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--draft"), arguments.indices.contains(index + 1) else { return }
+        do {
+            let url = URL(fileURLWithPath: arguments[index + 1])
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            text = contents
+            baseline = contents
+            savedText = contents
+            title = url.deletingPathExtension().lastPathComponent
+            if let originalIndex = arguments.firstIndex(of: "--original"), arguments.indices.contains(originalIndex + 1) {
+                baseline = try String(contentsOfFile: arguments[originalIndex + 1], encoding: .utf8)
+            }
+        } catch { self.error = error.localizedDescription }
+    }
 
     func canDiscard() -> Bool {
         guard text != savedText else { return true }
@@ -66,14 +83,13 @@ final class Draft: ObservableObject {
     func navigate(_ delta: Int) {
         guard !changes.isEmpty, !calculating else { return }
         selected = (selected + delta + changes.count) % changes.count
-        editor?.setSelectedRange(changes[selected].range)
-        editor?.scrollRangeToVisible(changes[selected].range)
+        editorCoordinator?.reveal(changes[selected].range)
     }
 
     func restore() {
         guard !calculating, changes.indices.contains(selected), let editor else { return }
         let change = changes[selected]
-        editor.insertText(change.original, replacementRange: change.range)
+        editorCoordinator?.replace(change.range, with: change.original)
         editor.undoManager?.setActionName("Restore original")
     }
 
@@ -173,44 +189,17 @@ struct ContentView: View {
                     Text(draft.calculating ? "Updating review…" : "\(draft.changes.count) changes")
                 }.font(.caption).foregroundStyle(.secondary).padding(12)
             }
-            if draft.reviewing {
-                Divider()
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack {
-                        Text("REVIEW").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(action: { draft.navigate(-1) }) { Image(systemName: "chevron.up") }
-                        Button(action: { draft.navigate(1) }) { Image(systemName: "chevron.down") }
-                    }
-                    if draft.changes.indices.contains(draft.selected) {
-                        let change = draft.changes[draft.selected]
-                        Text("Change \(draft.selected + 1) of \(draft.changes.count)").font(.headline)
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("Original").font(.caption).foregroundStyle(.secondary)
-                                Text(change.original.isEmpty ? "(nothing)" : change.original)
-                                    .textSelection(.enabled).foregroundStyle(.red)
-                                Divider()
-                                Text("Current").font(.caption).foregroundStyle(.secondary)
-                                Text(change.replacement.isEmpty ? "(deleted)" : change.replacement)
-                                    .textSelection(.enabled)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        Button("Restore original", action: draft.restore).disabled(draft.calculating)
-                    } else {
-                        Text("No changes").font(.headline)
-                        Text("Edit the draft to start reviewing.").foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Choose original file…", action: draft.chooseBaseline)
-                    Text("Comparing with the opened file or chosen original. Git staging comes next.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(20).frame(width: 240)
-            }
+
         }
         .toolbar {
             Button("Open…", action: draft.openDraft)
             Toggle("Review", isOn: $draft.reviewing)
+            Button(action: { draft.navigate(-1) }) { Image(systemName: "chevron.up") }
+                .help("Previous change")
+            Button(action: { draft.navigate(1) }) { Image(systemName: "chevron.down") }
+                .help("Next change")
+            Button("Restore change", action: draft.restore).disabled(draft.changes.isEmpty || draft.calculating)
+            Button("Compare with…", action: draft.chooseBaseline)
             Button("Save copy…", action: draft.saveCopy)
         }
         .alert("Could not complete action", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
@@ -219,87 +208,143 @@ struct ContentView: View {
     }
 }
 
+final class ProseTextView: NSTextView {
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        textContainerInset = NSSize(width: max(48, (newSize.width - 760) / 2), height: 36)
+    }
+}
+
 struct NativeEditor: NSViewRepresentable {
     @ObservedObject var draft: Draft
-
     func makeCoordinator() -> Coordinator { Coordinator(draft: draft) }
-
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
-        let editor = NSTextView(usingTextLayoutManager: true)
+        let editor = ProseTextView(usingTextLayoutManager: true)
         editor.isRichText = false
         editor.allowsUndo = true
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextReplacementEnabled = false
-        editor.isContinuousSpellCheckingEnabled = true
-        editor.font = .systemFont(ofSize: 20, weight: .regular).withDesign(.serif)
-        editor.textColor = .textColor
-        editor.backgroundColor = .textBackgroundColor
-        editor.textContainerInset = NSSize(width: 40, height: 36)
+        editor.isContinuousSpellCheckingEnabled = false
+        editor.textContainerInset = NSSize(width: 52, height: 36)
         editor.isVerticallyResizable = true
         editor.isHorizontallyResizable = false
         editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true
-        editor.minSize = NSSize(width: 0, height: 0)
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 7
-        editor.defaultParagraphStyle = paragraph
-        editor.typingAttributes = [.font: editor.font!, .paragraphStyle: paragraph, .foregroundColor: NSColor.textColor]
-        editor.string = draft.text
-        editor.delegate = context.coordinator
+        editor.backgroundColor = .textBackgroundColor
         scroll.documentView = editor
         scroll.hasVerticalScroller = true
         draft.editor = editor
+        draft.editorCoordinator = context.coordinator
+        editor.delegate = context.coordinator
+        context.coordinator.render()
         return scroll
     }
-
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let editor = scroll.documentView as? NSTextView else { return }
-        if editor.string != draft.text { editor.string = draft.text }
-        guard let storage = editor.textStorage else { return }
-        let range = NSRange(location: 0, length: storage.length)
-        storage.beginEditing()
-        storage.removeAttribute(.backgroundColor, range: range)
-        storage.removeAttribute(.underlineStyle, range: range)
-        if draft.reviewing && !draft.calculating {
-            for change in draft.changes {
-                if change.range.length > 0 {
-                    storage.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.16), range: change.range)
-                } else if storage.length > 0 {
-                    let location = min(change.range.location, storage.length - 1)
-                    let anchor = (storage.string as NSString).rangeOfComposedCharacterSequence(at: location)
-                    storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.double.rawValue, range: anchor)
-                }
-            }
-        }
-        storage.endEditing()
-        editor.typingAttributes.removeValue(forKey: .backgroundColor)
-        editor.typingAttributes.removeValue(forKey: .underlineStyle)
+        context.coordinator.render()
     }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
-        let draft: Draft
+        unowned let draft: Draft
+        var document = ReviewDocument(original: "", current: "", reviewing: false)
+        var lastText: String?
+        var lastOriginal: String?
+        var lastReview: Bool?
+        var rendering = false
         init(draft: Draft) { self.draft = draft }
-        func textDidChange(_ notification: Notification) {
-            guard let editor = notification.object as? NSTextView else { return }
-            draft.text = editor.string
+
+        func render(cursor: Int? = nil) {
+            guard let editor = draft.editor else { return }
+            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing else { return }
+            let sourceCursor = cursor ?? document.sourceRange(for: editor.selectedRange())?.location ?? 0
+            rendering = true
+            defer { rendering = false }
+            document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 8
+            paragraph.paragraphSpacing = 8
+            let font = NSFont(name: "Charter", size: 20) ?? .systemFont(ofSize: 20)
+            let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.textColor, .paragraphStyle: paragraph]
+            let result = NSMutableAttributedString(string: document.text, attributes: base)
+            for span in document.spans {
+                switch span.kind {
+                case .original:
+                    result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13), range: span.display)
+                    result.addAttribute(.foregroundColor, value: NSColor.labelColor.withAlphaComponent(0.75), range: span.display)
+                case .current:
+                    result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.14), range: span.display)
+                case .label:
+                    result.addAttributes([.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor], range: span.display)
+                case .unchanged: break
+                }
+            }
+            if draft.reviewing {
+                for change in Review.changes(from: draft.baseline, to: draft.text) where change.range.length > 0 {
+                    for span in document.spans {
+                        guard let source = span.source else { continue }
+                        let overlap = NSIntersectionRange(source, change.range)
+                        guard overlap.length > 0 else { continue }
+                        let range = NSRange(location: span.display.location + overlap.location - source.location, length: overlap.length)
+                        result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.33), range: range)
+                    }
+                }
+                for change in Review.changes(from: draft.text, to: draft.baseline) where change.range.length > 0 {
+                    // Original blocks follow the baseline in order; locate them without adding their text to the saved draft.
+                    var originalPosition = 0
+                    for span in document.spans {
+                        if span.kind == .original || span.kind == .unchanged {
+                            let oldRange = NSRange(location: originalPosition, length: span.display.length)
+                            let overlap = NSIntersectionRange(oldRange, change.range)
+                            if span.kind == .original && overlap.length > 0 {
+                                result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.3), range: NSRange(location: span.display.location + overlap.location - oldRange.location, length: overlap.length))
+                            }
+                            originalPosition += span.display.length
+                        }
+                    }
+                }
+            }
+            editor.textStorage?.setAttributedString(result)
+            editor.typingAttributes = base
+            editor.setSelectedRange(NSRange(location: document.displayOffset(for: min(sourceCursor, draft.text.utf16.count)), length: 0))
+            lastText = draft.text
+            lastOriginal = draft.baseline
+            lastReview = draft.reviewing
+        }
+
+        func replace(_ range: NSRange, with replacement: String) {
+            guard let editor = draft.editor else { return }
+            let old = (draft.text as NSString).substring(with: range)
+            editor.undoManager?.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.replace(NSRange(location: range.location, length: replacement.utf16.count), with: old)
+                }
+            }
+            draft.text = (draft.text as NSString).replacingCharacters(in: range, with: replacement)
+            render(cursor: range.location + replacement.utf16.count)
             draft.refresh()
         }
+
+        func reveal(_ range: NSRange) {
+            let display = NSRange(location: document.displayOffset(for: range.location), length: 0)
+            draft.editor?.setSelectedRange(display)
+            draft.editor?.scrollRangeToVisible(display)
+        }
+
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            guard let replacementString else { return false }
+            guard let source = document.sourceRange(for: affectedCharRange) else { NSSound.beep(); return false }
+            replace(source, with: replacementString)
+            return false
+        }
+
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard !draft.calculating, let editor = notification.object as? NSTextView else { return }
-            let cursor = editor.selectedRange().location
-            if let index = draft.changes.firstIndex(where: { cursor >= $0.range.location && cursor <= NSMaxRange($0.range) }) {
-                if draft.selected != index { draft.selected = index }
+            guard !rendering, !draft.calculating, let editor = draft.editor,
+                  let source = document.sourceRange(for: editor.selectedRange()) else { return }
+            if let index = draft.changes.firstIndex(where: { source.location >= $0.range.location && source.location <= NSMaxRange($0.range) }), draft.selected != index {
+                draft.selected = index
             }
         }
-    }
-}
-
-extension NSFont {
-    func withDesign(_ design: NSFontDescriptor.SystemDesign) -> NSFont {
-        guard let descriptor = fontDescriptor.withDesign(design) else { return self }
-        return NSFont(descriptor: descriptor, size: pointSize) ?? self
     }
 }
