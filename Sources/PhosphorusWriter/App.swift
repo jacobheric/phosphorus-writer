@@ -35,9 +35,11 @@ final class Draft: ObservableObject {
     @Published var repository: ManuscriptRepository?
     @Published var changedOnly = false
     @Published var activePath: String?
+    @Published var sidebarPath: String?
     @Published var loading = false
     private var repositoryDirectory: URL?
     private var loadID = UUID()
+    private var scanID = UUID()
     var unsaved: Bool { text != savedText }
     var visibleFiles: [ManuscriptFile] {
         (repository?.files ?? []).filter { !changedOnly || $0.changed || ($0.path == activePath && unsaved) }
@@ -70,7 +72,9 @@ final class Draft: ObservableObject {
         panel.canChooseDirectories = true
         panel.message = "Choose your manuscript's Git repository"
         guard panel.runModal() == .OK, let url = panel.url, canDiscard() else { return }
+        loadID = UUID()
         activePath = nil
+        sidebarPath = nil
         savedText = text
         repositoryDirectory = url
         refreshRepository(selectFirst: true)
@@ -78,14 +82,17 @@ final class Draft: ObservableObject {
 
     func refreshRepository(selectFirst: Bool = false) {
         guard let directory = repositoryDirectory, !loading else { return }
+        let request = UUID()
+        scanID = request
         Task {
             do {
                 let snapshot = try await Task.detached { try ManuscriptRepository.scan(at: directory) }.value
-                guard repositoryDirectory == directory else { return }
+                guard repositoryDirectory == directory, scanID == request else { return }
                 let previousRoot = repository?.root
                 repository = snapshot
                 if activePath == nil, !selectFirst {
                     activePath = snapshot.files.first(where: { URL(fileURLWithPath: $0.path).deletingPathExtension().lastPathComponent == title })?.path
+                    sidebarPath = activePath
                 }
                 if selectFirst || (activePath == nil && previousRoot != snapshot.root) {
                     if let first = snapshot.files.first { selectFile(first) }
@@ -95,10 +102,16 @@ final class Draft: ObservableObject {
     }
 
     func selectFile(_ file: ManuscriptFile) {
-        guard file.path != activePath, let repository, canDiscard() else { return }
-        loading = true
+        guard file.path != sidebarPath, let repository else { return }
+        guard canDiscard() else { return }
         let request = UUID()
         loadID = request
+        sidebarPath = file.path
+        if file.path == activePath {
+            loading = false
+            return
+        }
+        loading = true
         Task {
             defer { if loadID == request { loading = false } }
             do {
@@ -116,7 +129,11 @@ final class Draft: ObservableObject {
                 editorCoordinator?.render(cursor: 0)
                 editor?.scrollRangeToVisible(NSRange(location: 0, length: 0))
                 refresh()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                guard loadID == request else { return }
+                sidebarPath = activePath
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -168,8 +185,12 @@ final class Draft: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let contents = try String(contentsOf: url, encoding: .utf8)
+            loadID = UUID()
+            scanID = UUID()
+            loading = false
             repository = nil
             activePath = nil
+            sidebarPath = nil
             repositoryDirectory = url.deletingLastPathComponent()
             baseline = contents
             text = contents
@@ -247,13 +268,19 @@ struct ContentView: View {
                 HStack {
                     Text("MANUSCRIPT").font(.caption).foregroundStyle(.secondary)
                     Spacer()
+                    Button(action: { draft.changedOnly.toggle() }) {
+                        Image(systemName: draft.changedOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                            .foregroundStyle(draft.changedOnly ? Color.accentColor : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(draft.changedOnly ? "Show all files" : "Show only files with local changes")
+                    .accessibilityLabel("Filter changed files")
+                    .accessibilityValue(draft.changedOnly ? "On" : "Off")
                     Button(action: { draft.refreshRepository() }) { Image(systemName: "arrow.clockwise") }
                         .buttonStyle(.plain).help("Refresh local changes")
                 }.padding(.horizontal, 16).padding(.top, 20)
-                Toggle("Changed only", isOn: $draft.changedOnly)
-                    .toggleStyle(.checkbox).font(.callout).padding(16)
                 if draft.repository != nil {
-                    List(selection: Binding<String?>(get: { draft.activePath }, set: { path in
+                    List(selection: Binding<String?>(get: { draft.sidebarPath }, set: { path in
                         if let file = draft.repository?.files.first(where: { $0.path == path }) { draft.selectFile(file) }
                     })) {
                         ForEach(["Front matter", "Chapters", "Back matter"], id: \.self) { section in
@@ -273,7 +300,7 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    }.listStyle(.sidebar).disabled(draft.loading)
+                    }.listStyle(.sidebar)
                     if draft.visibleFiles.isEmpty {
                         Text("No changed chapters").font(.callout).foregroundStyle(.secondary).padding(16)
                     }
@@ -282,7 +309,7 @@ struct ContentView: View {
                     Button("Open manuscript…", action: draft.openManuscript).padding(.horizontal, 16)
                     Spacer()
                 }
-                Text(draft.loading ? "Loading chapter…" : "\(draft.repository?.files.count ?? 1) files · \(draft.repository?.files.filter(\.changed).count ?? 0) changed")
+                Text("\(draft.repository?.files.count ?? 1) files · \(draft.repository?.files.filter(\.changed).count ?? 0) changed")
                     .font(.caption).foregroundStyle(.secondary).padding(16)
             }.frame(width: 225).background(.bar)
             Divider()
@@ -442,7 +469,7 @@ struct NativeEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            guard let replacementString else { return false }
+            guard !draft.loading, let replacementString else { return false }
             guard let source = document.sourceRange(for: affectedCharRange) else { NSSound.beep(); return false }
             replace(source, with: replacementString)
             return false

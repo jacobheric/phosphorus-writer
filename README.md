@@ -33,7 +33,7 @@ Review mode protects original passages and labels. Selections crossing those pro
 
 ## Manuscript sidebar
 
-Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. An amber dot marks staged, unstaged, or untracked local changes; Changed only filters the list. The active file also receives a dot for unsaved in-memory edits.
+Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. An amber dot marks staged, unstaged, or untracked local changes; the small filter icon beside MANUSCRIPT toggles changed-only filtering and shows a tooltip. The active file also receives a dot for unsaved in-memory edits.
 
 Selecting a file loads its working copy against HEAD automatically. New files compare with an empty baseline; deleted files show their committed contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
 
