@@ -30,3 +30,11 @@ swiftc Sources/WriterCore/Review.swift Sources/WriterCore/ReviewDocument.swift s
 ```
 
 Review mode protects original passages and labels. Selections crossing those protected regions cannot be replaced; switch Review off for broad edits. Typing currently undoes one input event at a time. Diff layout is rebuilt while typing in this prototype; incremental layout, composition input, and large-document performance remain follow-up work.
+
+## Manuscript sidebar
+
+Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. An amber dot marks staged, unstaged, or untracked local changes; Changed only filters the list. The active file also receives a dot for unsaved in-memory edits.
+
+Selecting a file loads its working copy against HEAD automatically. New files compare with an empty baseline; deleted files show their committed contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
+
+Git access is read-only. There is still no staging, committing, or automatic saving.

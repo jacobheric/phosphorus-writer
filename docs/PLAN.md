@@ -31,3 +31,7 @@ The first prototype is not the daily-use editor. It has no autosave, recovery, G
 ## Review layout decision
 
 Use a unified comparison inspired by Fork: original paragraphs in red above current editable paragraphs in green, with stronger word-level highlights. Use Charter and comfortable spacing with bounded reading width. Keep the source buffer separate from the display projection so labels and old text never enter saved Markdown. Protected-region selections require switching to clean editing for broad edits. The current prototype rebuilds this projection synchronously; incremental rendering and native composition/undo grouping need validation before daily use.
+
+## Sidebar implementation
+
+The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, recovery drafts, external-change reconciliation, and Git write actions remain outstanding.

@@ -32,6 +32,16 @@ final class Draft: ObservableObject {
     @Published var reviewing = true
     @Published var calculating = false
     @Published var error: String?
+    @Published var repository: ManuscriptRepository?
+    @Published var changedOnly = false
+    @Published var activePath: String?
+    @Published var loading = false
+    private var repositoryDirectory: URL?
+    private var loadID = UUID()
+    var unsaved: Bool { text != savedText }
+    var visibleFiles: [ManuscriptFile] {
+        (repository?.files ?? []).filter { !changedOnly || $0.changed || ($0.path == activePath && unsaved) }
+    }
     weak var editor: NSTextView?
     var editorCoordinator: NativeEditor.Coordinator?
     private var calculation: Task<Void, Never>?
@@ -42,6 +52,7 @@ final class Draft: ObservableObject {
         guard let index = arguments.firstIndex(of: "--draft"), arguments.indices.contains(index + 1) else { return }
         do {
             let url = URL(fileURLWithPath: arguments[index + 1])
+            repositoryDirectory = url.deletingLastPathComponent()
             let contents = try String(contentsOf: url, encoding: .utf8)
             text = contents
             baseline = contents
@@ -51,6 +62,62 @@ final class Draft: ObservableObject {
                 baseline = try String(contentsOfFile: arguments[originalIndex + 1], encoding: .utf8)
             }
         } catch { self.error = error.localizedDescription }
+    }
+
+    func openManuscript() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.message = "Choose your manuscript's Git repository"
+        guard panel.runModal() == .OK, let url = panel.url, canDiscard() else { return }
+        activePath = nil
+        savedText = text
+        repositoryDirectory = url
+        refreshRepository(selectFirst: true)
+    }
+
+    func refreshRepository(selectFirst: Bool = false) {
+        guard let directory = repositoryDirectory, !loading else { return }
+        Task {
+            do {
+                let snapshot = try await Task.detached { try ManuscriptRepository.scan(at: directory) }.value
+                guard repositoryDirectory == directory else { return }
+                let previousRoot = repository?.root
+                repository = snapshot
+                if activePath == nil, !selectFirst {
+                    activePath = snapshot.files.first(where: { URL(fileURLWithPath: $0.path).deletingPathExtension().lastPathComponent == title })?.path
+                }
+                if selectFirst || (activePath == nil && previousRoot != snapshot.root) {
+                    if let first = snapshot.files.first { selectFile(first) }
+                }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func selectFile(_ file: ManuscriptFile) {
+        guard file.path != activePath, let repository, canDiscard() else { return }
+        loading = true
+        let request = UUID()
+        loadID = request
+        Task {
+            defer { if loadID == request { loading = false } }
+            do {
+                let contents = try await Task.detached { try repository.read(file) }.value
+                guard loadID == request else { return }
+                calculation?.cancel()
+                activePath = file.path
+                baseline = contents.original
+                text = contents.current
+                savedText = contents.current
+                title = file.title
+                selected = 0
+                changes = []
+                editor?.undoManager?.removeAllActions()
+                editorCoordinator?.render(cursor: 0)
+                editor?.scrollRangeToVisible(NSRange(location: 0, length: 0))
+                refresh()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 
     func canDiscard() -> Bool {
@@ -101,12 +168,16 @@ final class Draft: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let contents = try String(contentsOf: url, encoding: .utf8)
+            repository = nil
+            activePath = nil
+            repositoryDirectory = url.deletingLastPathComponent()
             baseline = contents
             text = contents
             savedText = contents
             title = url.deletingPathExtension().lastPathComponent
             editor?.undoManager?.removeAllActions()
             refresh()
+            refreshRepository()
         } catch { self.error = error.localizedDescription }
     }
 
@@ -155,6 +226,7 @@ struct WriterApp: App {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
                     draft.refresh()
+                    draft.refreshRepository()
                 }
         }
         .defaultSize(width: 1180, height: 800)
@@ -171,17 +243,51 @@ struct ContentView: View {
     @ObservedObject var draft: Draft
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("MANUSCRIPT").font(.caption).foregroundStyle(.secondary)
-                Label(draft.title, systemImage: "doc.text").font(.headline)
-                Text("Editor prototype").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("In-memory draft\nSave a copy to keep your work.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(20).frame(width: 180).background(.bar)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("MANUSCRIPT").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(action: { draft.refreshRepository() }) { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.plain).help("Refresh local changes")
+                }.padding(.horizontal, 16).padding(.top, 20)
+                Toggle("Changed only", isOn: $draft.changedOnly)
+                    .toggleStyle(.checkbox).font(.callout).padding(16)
+                if draft.repository != nil {
+                    List(selection: Binding<String?>(get: { draft.activePath }, set: { path in
+                        if let file = draft.repository?.files.first(where: { $0.path == path }) { draft.selectFile(file) }
+                    })) {
+                        ForEach(["Front matter", "Chapters", "Back matter"], id: \.self) { section in
+                            let files = draft.visibleFiles.filter { $0.section == section }
+                            if !files.isEmpty {
+                                Section(section) {
+                                    ForEach(files) { file in
+                                        HStack {
+                                            Text(file.title).lineLimit(1)
+                                            Spacer()
+                                            if file.changed || (file.path == draft.activePath && draft.unsaved) {
+                                                Circle().fill(.orange).frame(width: 6, height: 6)
+                                                    .accessibilityLabel("Local changes")
+                                            }
+                                        }.tag(file.path).help(file.path + (file.changed ? " — local changes" : ""))
+                                    }
+                                }
+                            }
+                        }
+                    }.listStyle(.sidebar).disabled(draft.loading)
+                    if draft.visibleFiles.isEmpty {
+                        Text("No changed chapters").font(.callout).foregroundStyle(.secondary).padding(16)
+                    }
+                } else {
+                    Text(draft.title).padding(16)
+                    Button("Open manuscript…", action: draft.openManuscript).padding(.horizontal, 16)
+                    Spacer()
+                }
+                Text(draft.loading ? "Loading chapter…" : "\(draft.repository?.files.count ?? 1) files · \(draft.repository?.files.filter(\.changed).count ?? 0) changed")
+                    .font(.caption).foregroundStyle(.secondary).padding(16)
+            }.frame(width: 225).background(.bar)
             Divider()
             VStack(spacing: 0) {
-                NativeEditor(draft: draft)
+                NativeEditor(draft: draft).disabled(draft.loading)
                 Divider()
                 HStack {
                     Text("\(draft.text.split(whereSeparator: { $0.isWhitespace }).count) words")
@@ -191,8 +297,11 @@ struct ContentView: View {
             }
 
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            draft.refreshRepository()
+        }
         .toolbar {
-            Button("Open…", action: draft.openDraft)
+            Button("Open manuscript…", action: draft.openManuscript)
             Toggle("Review", isOn: $draft.reviewing)
             Button(action: { draft.navigate(-1) }) { Image(systemName: "chevron.up") }
                 .help("Previous change")
