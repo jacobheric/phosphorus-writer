@@ -35,7 +35,7 @@ Review mode protects original passages. Selections crossing those protected regi
 
 Drag the sidebar divider to resize it. Chapter rows keep the same height whether they have changes or not. ⌘+ (or ⌘=) and ⌘− resize the writing text; ⌘0 restores the default. Text size is remembered across launches.
 
-The Format toggle styles headings, bold, italics, and code directly in the editable text. Markdown markers stay visible but quieter; formatting never changes the source. This is basic live styling, not a full Markdown renderer.
+The Format toggle styles headings, bold, italics, and code directly in the editable text. Heading and emphasis markers stay hidden until you enter their paragraph, then hide again when you leave. Formatting never changes the source. This is basic live styling, not a full Markdown renderer.
 
 ## Manuscript sidebar
 

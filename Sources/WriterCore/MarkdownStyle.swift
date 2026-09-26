@@ -36,3 +36,48 @@ public struct MarkdownStyle: Sendable {
         return result
     }
 }
+
+public extension MarkdownStyle {
+    static func hiddenMarkers(in document: ReviewDocument, original: String, current: String, activeParagraph: NSRange?) -> [NSRange] {
+        func markers(_ text: String) -> [NSRange] {
+            let source = text as NSString
+            return spans(in: text).filter { $0.kind == .marker }.map { style in
+                var range = style.range
+                if source.substring(with: range).hasPrefix("#") {
+                    while NSMaxRange(range) < source.length && [9, 32].contains(source.character(at: NSMaxRange(range))) { range.length += 1 }
+                }
+                return range
+            }
+        }
+        let before = markers(original)
+        let after = markers(current).filter { marker in
+            guard let activeParagraph else { return true }
+            return NSIntersectionRange(marker, activeParagraph).length == 0
+        }
+        var oldPosition = 0
+        var result: [NSRange] = []
+        for span in document.spans {
+            let source: NSRange
+            let ranges: [NSRange]
+            switch span.kind {
+            case .original:
+                source = NSRange(location: oldPosition, length: span.display.length)
+                ranges = before
+                oldPosition += span.display.length
+            case .unchanged, .current:
+                guard let currentSource = span.source else { continue }
+                source = currentSource
+                ranges = after
+                if span.kind == .unchanged { oldPosition += span.display.length }
+            case .label: continue
+            }
+            for marker in ranges {
+                let overlap = NSIntersectionRange(marker, source)
+                if overlap.length > 0 {
+                    result.append(NSRange(location: span.display.location + overlap.location - source.location, length: overlap.length))
+                }
+            }
+        }
+        return result
+    }
+}

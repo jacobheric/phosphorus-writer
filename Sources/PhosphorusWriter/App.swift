@@ -15,7 +15,6 @@ struct QuietButton: View {
     let symbol: String
     let help: String
     var active = false
-    var dimWhenDisabled = true
     let action: () -> Void
 
     var body: some View {
@@ -28,7 +27,7 @@ struct QuietButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(isEnabled || !dimWhenDisabled ? 1 : 0.35)
+        .opacity(isEnabled ? 1 : 0.35)
         .background(FastTooltip(text: help))
         .accessibilityLabel(help)
     }
@@ -186,6 +185,7 @@ final class Draft: ObservableObject {
                 selected = 0
                 changes = []
                 editor?.undoManager?.removeAllActions()
+                editorCoordinator?.activeParagraph = nil
                 editorCoordinator?.render(cursor: 0)
                 editor?.scrollRangeToVisible(NSRange(location: 0, length: 0))
                 if focusEditor { editor?.window?.makeFirstResponder(editor) }
@@ -499,10 +499,10 @@ struct ContentView: View {
                                                 }.buttonStyle(.plain)
                                                     .accessibilityAddTraits(file.path == draft.sidebarPath ? .isSelected : [])
                                                 if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                    QuietButton(symbol: "checkmark.circle", help: "Commit", dimWhenDisabled: draft.writing) {
+                                                    QuietButton(symbol: "checkmark.circle", help: "Commit") {
                                                         draft.prepareCommit(path: file.path)
                                                     }
-                                                    .disabled(draft.loading || draft.writing)
+                                                    .disabled(draft.writing)
                                                     .accessibilityLabel("Commit " + file.title)
                                                 } else {
                                                     Color.clear.frame(width: 28, height: 28)
@@ -607,6 +607,25 @@ struct ContentView: View {
 
 final class ProseTextView: NSTextView {
     var resizeText: ((Double) -> Void)?
+    var paragraphClicked: (() -> Void)?
+    var focusLeft: (() -> Void)?
+    var selectEntireSource: (() -> Void)?
+
+    override func selectAll(_ sender: Any?) {
+        selectEntireSource?()
+        super.selectAll(sender)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        paragraphClicked?()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { focusLeft?() }
+        return resigned
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection([.command, .control, .option]) == .command {
@@ -632,6 +651,16 @@ struct NativeEditor: NSViewRepresentable {
         let scroll = NSScrollView()
         let editor = ProseTextView(usingTextLayoutManager: true)
         editor.resizeText = { [weak draft] step in draft?.resizeText(step) }
+        editor.paragraphClicked = { [weak coordinator = context.coordinator] in coordinator?.updateParagraph() }
+        editor.selectEntireSource = { [weak coordinator = context.coordinator, weak draft] in
+            guard let draft else { return }
+            coordinator?.activeParagraph = NSRange(location: 0, length: draft.text.utf16.count)
+            coordinator?.render(force: true)
+        }
+        editor.focusLeft = { [weak coordinator = context.coordinator] in
+            coordinator?.activeParagraph = nil
+            coordinator?.render(force: true)
+        }
         editor.isRichText = false
         editor.allowsUndo = true
         editor.isAutomaticQuoteSubstitutionEnabled = false
@@ -667,25 +696,49 @@ struct NativeEditor: NSViewRepresentable {
         var lastReview: Bool?
         var lastFontSize: Double?
         var lastFormatted: Bool?
+        var projection = TextProjection("", hiding: [])
+        var activeParagraph: NSRange?
         var rendering = false
         init(draft: Draft) { self.draft = draft }
 
-        func render(cursor: Int? = nil) {
+        func render(cursor: Int? = nil, force: Bool = false) {
             guard let editor = draft.editor else { return }
-            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize || lastFormatted != draft.formatted else { return }
-            let sourceCursor = cursor ?? document.sourceRange(for: editor.selectedRange())?.location ?? 0
+            guard force || lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize || lastFormatted != draft.formatted else { return }
+            let oldSelection = projection.sourceRange(editor.selectedRange())
+            let sourceSelection = cursor.map { NSRange(location: $0, length: 0) } ?? document.sourceRange(for: oldSelection)
             rendering = true
             defer { rendering = false }
             document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
             let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize, formatted: draft.formatted)
-            editor.textStorage?.setAttributedString(rendered.text)
+            let hidden = draft.formatted ? MarkdownStyle.hiddenMarkers(in: document, original: draft.baseline, current: draft.text, activeParagraph: activeParagraph) : []
+            projection = TextProjection(document.text, hiding: hidden)
+            let display = NSMutableAttributedString(attributedString: rendered.text)
+            for range in hidden.sorted(by: { $0.location > $1.location }) { display.deleteCharacters(in: range) }
+            editor.textStorage?.setAttributedString(display)
             editor.typingAttributes = rendered.typing
-            editor.setSelectedRange(NSRange(location: document.displayOffset(for: min(sourceCursor, draft.text.utf16.count)), length: 0))
+            let selection: NSRange
+            if let sourceSelection {
+                let start = document.displayOffset(for: min(sourceSelection.location, draft.text.utf16.count))
+                let end = document.displayOffset(for: min(NSMaxRange(sourceSelection), draft.text.utf16.count))
+                selection = projection.displayRange(NSRange(location: start, length: max(0, end - start)))
+            } else {
+                selection = projection.displayRange(oldSelection)
+            }
+            editor.setSelectedRange(selection)
             lastText = draft.text
             lastOriginal = draft.baseline
             lastReview = draft.reviewing
             lastFontSize = draft.fontSize
             lastFormatted = draft.formatted
+        }
+
+        func updateParagraph() {
+            guard !rendering, draft.formatted, let editor = draft.editor else { return }
+            let source = document.sourceRange(for: projection.sourceRange(editor.selectedRange()))
+            let paragraph = source.map { (draft.text as NSString).paragraphRange(for: $0) }
+            guard paragraph != activeParagraph else { return }
+            activeParagraph = paragraph
+            render(force: true)
         }
 
         func replace(_ range: NSRange, with replacement: String) {
@@ -697,26 +750,30 @@ struct NativeEditor: NSViewRepresentable {
                 }
             }
             draft.text = (draft.text as NSString).replacingCharacters(in: range, with: replacement)
-            render(cursor: range.location + replacement.utf16.count)
+            let cursor = range.location + replacement.utf16.count
+            activeParagraph = (draft.text as NSString).paragraphRange(for: NSRange(location: cursor, length: 0))
+            render(cursor: cursor)
             draft.refresh()
         }
 
         func reveal(_ range: NSRange) {
-            let display = NSRange(location: document.displayOffset(for: range.location), length: 0)
+            let display = NSRange(location: projection.displayOffset(document.displayOffset(for: range.location)), length: 0)
             draft.editor?.setSelectedRange(display)
-            draft.editor?.scrollRangeToVisible(display)
+            if let editor = draft.editor { editor.scrollRangeToVisible(editor.selectedRange()) }
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard !draft.loading, !draft.writing, let replacementString else { return false }
-            guard let source = document.sourceRange(for: affectedCharRange) else { NSSound.beep(); return false }
+            guard let source = document.sourceRange(for: projection.sourceRange(affectedCharRange)) else { NSSound.beep(); return false }
             replace(source, with: replacementString)
             return false
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard !rendering, !draft.calculating, let editor = draft.editor,
-                  let source = document.sourceRange(for: editor.selectedRange()) else { return }
+            guard !rendering else { return }
+            updateParagraph()
+            guard !draft.calculating, let editor = draft.editor,
+                  let source = document.sourceRange(for: projection.sourceRange(editor.selectedRange())) else { return }
             if let index = draft.changes.firstIndex(where: { source.location >= $0.range.location && source.location <= NSMaxRange($0.range) }), draft.selected != index {
                 draft.selected = index
             }
