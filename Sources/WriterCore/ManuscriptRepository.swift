@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 public struct ManuscriptFile: Identifiable, Sendable {
     public var id: String { path }
@@ -75,9 +76,12 @@ public struct ManuscriptRepository: Sendable {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        // The exit callback avoids waitUntilExit’s delay on short Git commands.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         guard process.terminationStatus == 0 else {
             throw NSError(domain: "PhosphorusGit", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Could not read Git data in \(directory.lastPathComponent). Check that this is a Git repository."])
         }

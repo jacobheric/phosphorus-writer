@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 public struct CommitFile: Identifiable, Sendable {
     public var id: String { path }
@@ -200,9 +201,12 @@ public enum RepositoryWrites {
             inputFile = try FileHandle(forReadingFrom: inputURL)
         }
         process.standardInput = inputFile ?? FileHandle.nullDevice
+        // The exit callback avoids waitUntilExit’s delay on short Git commands.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         let text = String(decoding: (try? Data(contentsOf: errorURL)) ?? data, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw failure(text.isEmpty ? "Git could not complete this action. Check the upstream branch and repository state." : text)
