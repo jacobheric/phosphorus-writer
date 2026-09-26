@@ -3,6 +3,36 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WriterCore
 
+private enum Paper {
+    static let sheet = NSColor(srgbRed: 0.985, green: 0.974, blue: 0.949, alpha: 1)
+    static let margin = Color(red: 0.957, green: 0.942, blue: 0.910)
+    static let ink = NSColor(srgbRed: 0.24, green: 0.23, blue: 0.21, alpha: 1)
+    static let accent = Color(red: 0.48, green: 0.39, blue: 0.27)
+}
+
+private struct QuietButton: View {
+    @Environment(\.isEnabled) private var isEnabled
+    let symbol: String
+    let help: String
+    var active = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .regular))
+                .frame(width: 28, height: 28)
+                .foregroundStyle(active ? Paper.accent : Color(nsColor: Paper.ink).opacity(0.65))
+                .background(active ? Paper.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.35)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 private let sampleOriginal = """
 # First light
 
@@ -242,9 +272,14 @@ struct WriterApp: App {
         WindowGroup("Phosphorus Writer") {
             ContentView(draft: draft)
                 .frame(minWidth: 850, minHeight: 580)
+                .preferredColorScheme(.light)
+                .tint(Paper.accent)
                 .onAppear {
                     lifecycle.draft = draft
                     NSApp.windows.first?.delegate = lifecycle
+                    NSApp.windows.first?.backgroundColor = Paper.sheet
+                    NSApp.windows.first?.titlebarAppearsTransparent = true
+                    NSApp.windows.first?.titlebarSeparatorStyle = .none
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
                     draft.refresh()
@@ -267,21 +302,17 @@ struct ContentView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
-                    Text("MANUSCRIPT").font(.caption).foregroundStyle(.secondary)
+                    Text("Manuscript")
+                        .font(.system(size: 15, weight: .medium, design: .serif))
                     Spacer()
-                    Button(action: { draft.changedOnly.toggle() }) {
-                        Image(systemName: draft.changedOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                            .foregroundStyle(draft.changedOnly ? Color.accentColor : Color.secondary)
+                    QuietButton(symbol: "line.3.horizontal.decrease", help: draft.changedOnly ? "Show all files" : "Show only files with local changes", active: draft.changedOnly) {
+                        draft.changedOnly.toggle()
                     }
-                    .frame(width: 24, height: 24)
-                    .buttonStyle(.plain)
-                    .help(draft.changedOnly ? "Show all files" : "Show only files with local changes")
-                    .accessibilityLabel("Filter changed files")
                     .accessibilityValue(draft.changedOnly ? "On" : "Off")
-                    Button(action: { draft.refreshRepository() }) { Image(systemName: "arrow.clockwise") }
-                        .frame(width: 24, height: 24)
-                        .buttonStyle(.plain).help("Refresh local changes")
-                }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
+                    QuietButton(symbol: "arrow.clockwise", help: "Refresh local changes") {
+                        draft.refreshRepository()
+                    }
+                }.padding(.horizontal, 20).padding(.vertical, 16)
                 if draft.repository != nil {
                     List(selection: Binding<String?>(get: { draft.sidebarPath }, set: { path in
                         if let file = draft.repository?.files.first(where: { $0.path == path }) { draft.selectFile(file) }
@@ -292,18 +323,19 @@ struct ContentView: View {
                                 Section(section) {
                                     ForEach(files) { file in
                                         HStack {
-                                            Text(file.title).lineLimit(1)
+                                            Text(file.title).font(.system(size: 14, design: .serif)).lineLimit(1)
                                             Spacer()
                                             if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                Circle().fill(.orange).frame(width: 6, height: 6)
+                                                Circle().fill(Paper.accent.opacity(0.7)).frame(width: 6, height: 6)
                                                     .accessibilityLabel("Local changes")
                                             }
-                                        }.tag(file.path).help(file.path + (file.changed ? " — local changes" : ""))
+                                        }.padding(.vertical, 5).tag(file.path).listRowSeparator(.hidden).listRowBackground(Color.clear).help(file.path + (file.changed ? " — local changes" : ""))
                                     }
                                 }
                             }
                         }
                     }.listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
                     if draft.visibleFiles.isEmpty {
                         Text("No changed chapters").font(.callout).foregroundStyle(.secondary).padding(16)
                     }
@@ -313,33 +345,40 @@ struct ContentView: View {
                     Spacer()
                 }
                 Text("\(draft.repository?.files.count ?? 1) files · \(draft.repository?.files.filter(\.changed).count ?? 0) changed")
-                    .font(.caption).foregroundStyle(.secondary).padding(16)
-            }.frame(width: 225).background(.bar)
-            Divider()
+                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 16)
+            }.frame(width: 245).background(Paper.margin)
+            Rectangle().fill(Paper.accent.opacity(0.12)).frame(width: 1)
             VStack(spacing: 0) {
                 NativeEditor(draft: draft).disabled(draft.loading)
-                Divider()
                 HStack {
                     Text("\(draft.text.split(whereSeparator: { $0.isWhitespace }).count) words")
                     Spacer()
                     Text(draft.calculating ? "Updating review…" : "\(draft.changes.count) changes")
-                }.font(.caption).foregroundStyle(.secondary).padding(12)
+                }.font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.vertical, 16)
             }
 
         }
+        .background(Color(nsColor: Paper.sheet))
+        .foregroundStyle(Color(nsColor: Paper.ink))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             draft.refreshRepository()
         }
         .toolbar {
-            Button("Open manuscript…", action: draft.openManuscript)
-            Toggle("Review", isOn: $draft.reviewing)
-            Button(action: { draft.navigate(-1) }) { Image(systemName: "chevron.up") }
-                .help("Previous change")
-            Button(action: { draft.navigate(1) }) { Image(systemName: "chevron.down") }
-                .help("Next change")
-            Button("Restore change", action: draft.restore).disabled(draft.changes.isEmpty || draft.calculating)
-            Button("Compare with…", action: draft.chooseBaseline)
-            Button("Save copy…", action: draft.saveCopy)
+            ToolbarItemGroup {
+                QuietButton(symbol: "folder", help: "Open manuscript…", action: draft.openManuscript)
+                QuietButton(symbol: "text.badge.checkmark", help: draft.reviewing ? "Hide changes" : "Show changes", active: draft.reviewing) {
+                    draft.reviewing.toggle()
+                }
+                .accessibilityValue(draft.reviewing ? "On" : "Off")
+                HStack(spacing: 4) {
+                    QuietButton(symbol: "chevron.up", help: "Previous change") { draft.navigate(-1) }
+                    QuietButton(symbol: "chevron.down", help: "Next change") { draft.navigate(1) }
+                    QuietButton(symbol: "arrow.uturn.backward", help: "Restore selected change", action: draft.restore)
+                }
+                .disabled(draft.changes.isEmpty || draft.calculating)
+                QuietButton(symbol: "doc.on.doc", help: "Compare with…", action: draft.chooseBaseline)
+                QuietButton(symbol: "square.and.arrow.down", help: "Save draft copy…", action: draft.saveCopy)
+            }
         }
         .alert("Could not complete action", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
             Button("OK") { draft.error = nil }
@@ -372,7 +411,9 @@ struct NativeEditor: NSViewRepresentable {
         editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        editor.backgroundColor = .textBackgroundColor
+        editor.backgroundColor = Paper.sheet
+        editor.insertionPointColor = Paper.ink
+        scroll.backgroundColor = Paper.sheet
         scroll.documentView = editor
         scroll.hasVerticalScroller = true
         draft.editor = editor
@@ -405,14 +446,14 @@ struct NativeEditor: NSViewRepresentable {
             paragraph.lineSpacing = 8
             paragraph.paragraphSpacing = 8
             let font = NSFont(name: "Charter", size: 20) ?? .systemFont(ofSize: 20)
-            let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.textColor, .paragraphStyle: paragraph]
+            let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Paper.ink, .paragraphStyle: paragraph]
             let result = NSMutableAttributedString(string: document.text, attributes: base)
             for span in document.spans {
                 switch span.kind {
                 case .original:
                     result.addAttribute(.toolTip, value: "Original committed text", range: span.display)
                     result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13), range: span.display)
-                    result.addAttribute(.foregroundColor, value: NSColor.labelColor.withAlphaComponent(0.75), range: span.display)
+                    result.addAttribute(.foregroundColor, value: Paper.ink.withAlphaComponent(0.72), range: span.display)
                 case .current:
                     result.addAttribute(.toolTip, value: "Current draft · click to edit", range: span.display)
                     result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.14), range: span.display)
