@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 import WriterCore
 
 private enum Paper {
-    static let sheet = NSColor(srgbRed: 0.985, green: 0.974, blue: 0.949, alpha: 1)
-    static let margin = Color(red: 0.957, green: 0.942, blue: 0.910)
+    static let sheet = NSColor.white
+    static let margin = Color(white: 0.975)
     static let ink = NSColor(srgbRed: 0.24, green: 0.23, blue: 0.21, alpha: 1)
     static let accent = Color(red: 0.48, green: 0.39, blue: 0.27)
 }
