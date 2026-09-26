@@ -35,11 +35,13 @@ Review mode protects original passages. Selections crossing those protected regi
 
 Drag the sidebar divider to resize it. Chapter rows keep the same height whether they have changes or not. ⌘+ (or ⌘=) and ⌘− resize the writing text; ⌘0 restores the default. Text size is remembered across launches.
 
+The Format toggle styles headings, bold, italics, and code directly in the editable text. Markdown markers stay visible but quieter; formatting never changes the source. This is basic live styling, not a full Markdown renderer.
+
 ## Manuscript sidebar
 
 Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. A small commit icon marks chapters with local changes, including unsaved edits. The filter icon toggles changed-only filtering. Button labels appear after a 150 ms hover.
 
-Selecting a file loads its working copy against HEAD automatically. New files compare with an empty baseline; deleted files show their committed contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
+Click a section heading to focus the sidebar, then use ↑/↓ to browse headings and files. Enter moves into the editor. Clicking a chapter directly also focuses its text. Selecting a file loads its working copy against HEAD automatically. New files compare with an empty baseline; deleted files show their committed contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
 
 ## Save, commit, and push
 

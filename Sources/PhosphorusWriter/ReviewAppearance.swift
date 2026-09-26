@@ -2,7 +2,7 @@ import AppKit
 import WriterCore
 
 enum ReviewAppearance {
-    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true, fontSize: Double = 20) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
+    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true, fontSize: Double = 20, formatted: Bool = false) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = fontSize * 0.4
         paragraph.paragraphSpacing = fontSize * 0.4
@@ -46,6 +46,38 @@ enum ReviewAppearance {
                         originalPosition += span.display.length
                     }
                 }
+            }
+        }
+        if formatted {
+            let oldStyles = MarkdownStyle.spans(in: original)
+            let newStyles = MarkdownStyle.spans(in: current)
+            var oldPosition = 0
+            for span in document.spans {
+                let source = span.kind == .original ? NSRange(location: oldPosition, length: span.display.length) : span.source
+                if let source {
+                    for style in span.kind == .original ? oldStyles : newStyles {
+                        let overlap = NSIntersectionRange(source, style.range)
+                        guard overlap.length > 0 else { continue }
+                        let range = NSRange(location: span.display.location + overlap.location - source.location, length: overlap.length)
+                        switch style.kind {
+                        case .marker:
+                            result.addAttribute(.foregroundColor, value: Paper.ink.withAlphaComponent(0.45), range: range)
+                        case .heading(let level):
+                            let size = fontSize * max(1, 1.45 - Double(level) * 0.1)
+                            let heading = NSFont(name: "Charter-Bold", size: size) ?? .boldSystemFont(ofSize: size)
+                            result.addAttribute(.font, value: heading, range: range)
+                        case .bold, .italic, .boldItalic:
+                            let traits: NSFontTraitMask = style.kind == .bold ? .boldFontMask : style.kind == .italic ? .italicFontMask : [.boldFontMask, .italicFontMask]
+                            result.enumerateAttribute(.font, in: range) { value, subrange, _ in
+                                let face = NSFontManager.shared.convert(value as? NSFont ?? font, toHaveTrait: traits)
+                                result.addAttribute(.font, value: face, range: subrange)
+                            }
+                        case .code:
+                            result.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: fontSize * 0.85, weight: .regular), range: range)
+                        }
+                    }
+                }
+                if span.kind == .original || span.kind == .unchanged { oldPosition += span.display.length }
             }
         }
         return (result, base)

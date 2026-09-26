@@ -54,6 +54,9 @@ Outside, the grass held a thousand drops of light. She opened the door.
 
 @MainActor
 final class Draft: ObservableObject {
+    @Published var formatted = UserDefaults.standard.bool(forKey: "formattedMarkdown") {
+        didSet { UserDefaults.standard.set(formatted, forKey: "formattedMarkdown") }
+    }
     @Published var fontSize = UserDefaults.standard.object(forKey: "proseFontSize") as? Double ?? 20 {
         didSet { UserDefaults.standard.set(fontSize, forKey: "proseFontSize") }
     }
@@ -150,13 +153,18 @@ final class Draft: ObservableObject {
         }
     }
 
-    func selectFile(_ file: ManuscriptFile) {
-        guard !writing, file.path != sidebarPath, let repository else { return }
+    func selectFile(_ file: ManuscriptFile, focusEditor: Bool = true) {
+        guard !writing, let repository else { return }
+        if file.path == sidebarPath {
+            if focusEditor && !loading { editor?.window?.makeFirstResponder(editor) }
+            return
+        }
         guard canDiscard() else { return }
         let request = UUID()
         loadID = request
         sidebarPath = file.path
         if file.path == activePath {
+            if focusEditor { editor?.window?.makeFirstResponder(editor) }
             loading = false
             return
         }
@@ -179,6 +187,7 @@ final class Draft: ObservableObject {
                 editor?.undoManager?.removeAllActions()
                 editorCoordinator?.render(cursor: 0)
                 editor?.scrollRangeToVisible(NSRange(location: 0, length: 0))
+                if focusEditor { editor?.window?.makeFirstResponder(editor) }
                 refresh()
             } catch {
                 guard loadID == request else { return }
@@ -413,6 +422,37 @@ struct WriterApp: App {
 
 struct ContentView: View {
     @ObservedObject var draft: Draft
+    @FocusState private var sidebarFocused: Bool
+    @State private var sidebarCursor: String?
+    private let sections = ["Front matter", "Chapters", "Back matter"]
+
+    private func browse(_ delta: Int, scroll: ScrollViewProxy) -> KeyPress.Result {
+        let entries = sections.flatMap { section -> [String] in
+            let paths = draft.visibleFiles.filter { $0.section == section }.map(\.path)
+            return paths.isEmpty ? [] : ["section:" + section] + paths
+        }
+        guard !entries.isEmpty else { return .handled }
+        let index = entries.firstIndex(of: sidebarCursor ?? draft.sidebarPath ?? "") ?? 0
+        let next = entries[min(entries.count - 1, max(0, index + delta))]
+        if let file = draft.visibleFiles.first(where: { $0.path == next }) {
+            draft.selectFile(file, focusEditor: false)
+            guard draft.sidebarPath == next else { return .handled }
+        }
+        sidebarCursor = next
+        scroll.scrollTo(next)
+        return .handled
+    }
+
+    private func editFromSidebar() -> KeyPress.Result {
+        if let cursor = sidebarCursor, cursor.hasPrefix("section:"),
+           let file = draft.visibleFiles.first(where: { "section:" + $0.section == cursor }) {
+            draft.selectFile(file)
+        } else if !draft.loading {
+            draft.editor?.window?.makeFirstResponder(draft.editor)
+        }
+        sidebarFocused = false
+        return .handled
+    }
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
@@ -427,20 +467,31 @@ struct ContentView: View {
                     QuietButton(symbol: "arrow.clockwise", help: "Refresh") {
                         draft.refreshRepository()
                     }
-                }.padding(.horizontal, 20).padding(.vertical, 16)
+                }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
                 if draft.repository != nil {
                     ScrollViewReader { scroll in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(["Front matter", "Chapters", "Back matter"], id: \.self) { section in
+                                ForEach(sections, id: \.self) { section in
                                     let files = draft.visibleFiles.filter { $0.section == section }
                                     if !files.isEmpty {
-                                        Text(section).font(.system(size: 11, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 6)
+                                        Button {
+                                            sidebarCursor = "section:" + section
+                                            sidebarFocused = true
+                                        } label: {
+                                            Text(section).font(.system(size: 11, weight: .medium))
+                                                .foregroundStyle(.secondary)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.horizontal, 12).frame(height: 30)
+                                                .contentShape(Rectangle())
+                                        }.buttonStyle(.plain)
+                                            .background(sidebarFocused && sidebarCursor == "section:" + section ? Color.black.opacity(0.045) : .clear,
+                                                        in: RoundedRectangle(cornerRadius: 9))
+                                            .padding(.top, 8).padding(.bottom, 4)
+                                            .id("section:" + section)
                                         ForEach(files) { file in
                                             HStack(spacing: 4) {
-                                                Button { draft.selectFile(file) } label: {
+                                                Button { sidebarFocused = false; sidebarCursor = file.path; draft.selectFile(file) } label: {
                                                     Text(file.title).font(.system(size: 14, design: .serif))
                                                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                                                         .frame(height: 34).contentShape(Rectangle())
@@ -457,7 +508,7 @@ struct ContentView: View {
                                                 }
                                             }
                                             .padding(.leading, 12).padding(.trailing, 6).frame(height: 34)
-                                            .background(file.path == draft.sidebarPath ? Color.black.opacity(0.045) : .clear,
+                                            .background((sidebarFocused ? file.path == sidebarCursor : file.path == draft.sidebarPath) ? Color.black.opacity(0.045) : .clear,
                                                         in: RoundedRectangle(cornerRadius: 9))
                                             .id(file.path)
                                         }
@@ -465,14 +516,12 @@ struct ContentView: View {
                                 }
                             }.padding(.horizontal, 8).padding(.bottom, 8)
                         }
-                        .onMoveCommand { direction in
-                            guard direction == .up || direction == .down, !draft.visibleFiles.isEmpty else { return }
-                            let files = draft.visibleFiles
-                            let index = files.firstIndex { $0.path == draft.sidebarPath } ?? 0
-                            let next = files[min(files.count - 1, max(0, index + (direction == .up ? -1 : 1)))]
-                            draft.selectFile(next)
-                            scroll.scrollTo(next.path)
-                        }
+                        .focusable().focusEffectDisabled().focused($sidebarFocused)
+                        .onKeyPress(.upArrow) { browse(-1, scroll: scroll) }
+                        .onKeyPress(.downArrow) { browse(1, scroll: scroll) }
+                        .onKeyPress(.return) { editFromSidebar() }
+                        .onKeyPress(.escape) { editFromSidebar() }
+
                     }
                     if draft.visibleFiles.isEmpty {
                         Text("No changed chapters").font(.callout).foregroundStyle(.secondary).padding(16)
@@ -487,7 +536,7 @@ struct ContentView: View {
             }.frame(minWidth: 210, idealWidth: 245, maxWidth: 440).background(Paper.margin)
                 .layoutPriority(1)
             VStack(spacing: 0) {
-                NativeEditor(draft: draft).disabled(draft.loading || draft.writing)
+                NativeEditor(draft: draft)
                 HStack {
                     Text("\(draft.text.split(whereSeparator: { $0.isWhitespace }).count) words")
                     Spacer()
@@ -506,6 +555,8 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 QuietButton(symbol: "folder", help: "Open", action: draft.openManuscript)
+                QuietButton(symbol: "textformat", help: "Format", active: draft.formatted) { draft.formatted.toggle() }
+                    .accessibilityValue(draft.formatted ? "On" : "Off")
                 QuietButton(symbol: "text.badge.checkmark", help: draft.reviewing ? "Hide changes" : "Show changes", active: draft.reviewing) {
                     draft.reviewing.toggle()
                 }
@@ -614,17 +665,18 @@ struct NativeEditor: NSViewRepresentable {
         var lastOriginal: String?
         var lastReview: Bool?
         var lastFontSize: Double?
+        var lastFormatted: Bool?
         var rendering = false
         init(draft: Draft) { self.draft = draft }
 
         func render(cursor: Int? = nil) {
             guard let editor = draft.editor else { return }
-            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize else { return }
+            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize || lastFormatted != draft.formatted else { return }
             let sourceCursor = cursor ?? document.sourceRange(for: editor.selectedRange())?.location ?? 0
             rendering = true
             defer { rendering = false }
             document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
-            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize)
+            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize, formatted: draft.formatted)
             editor.textStorage?.setAttributedString(rendered.text)
             editor.typingAttributes = rendered.typing
             editor.setSelectedRange(NSRange(location: document.displayOffset(for: min(sourceCursor, draft.text.utf16.count)), length: 0))
@@ -632,6 +684,7 @@ struct NativeEditor: NSViewRepresentable {
             lastOriginal = draft.baseline
             lastReview = draft.reviewing
             lastFontSize = draft.fontSize
+            lastFormatted = draft.formatted
         }
 
         func replace(_ range: NSRange, with replacement: String) {
