@@ -72,7 +72,7 @@ Click a section heading to focus the sidebar, then use ↑/↓ to browse heading
 
 ⌘S and the save icon write the current draft back to its file. Save Draft Copy remains available with ⇧⌘S and does not mark the original file as saved.
 
-Hover over a changed paragraph, or place the caret in it, to reveal a small Stage checkmark in the margin. Staging saves the draft, approves that hunk, and removes its diff from the reading view. Adjacent changed lines can form one hunk. Later edits appear as new differences against the staged text. Staging is available for repository files in Review mode, not custom comparisons.
+Hover over a changed paragraph, or place the caret in it, to reveal a small Stage checkmark in the margin. Clicking asks for confirmation. Stage saves the draft, approves that hunk, and removes its diff from the reading view; Cancel leaves it pending. Adjacent changed lines can form one hunk. Later edits appear as new differences against the staged text. Staging is available for repository files in Review mode, not custom comparisons.
 
 Each changed chapter has a commit icon. It saves that chapter if open, then reviews only its staged changes against HEAD. The toolbar Commit icon reviews staged changes across the repository. A ready count links to this review. Stage all explicitly stages the whole chapter or repository; Unstage removes the selected file’s approvals without changing its working text. A file list lets you inspect each visual diff, including files outside the manuscript. Text uses the same red/green word highlights as the editor; binary files and mode changes are identified separately.
 

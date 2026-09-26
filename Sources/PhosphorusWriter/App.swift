@@ -331,10 +331,20 @@ final class Draft: ObservableObject {
 
     func stage(_ hunk: ReviewHunk) {
         guard usingIndex, reviewing, !loading, !writing, let repository, let path = activePath else { return }
-        save()
-        guard !unsaved else { return }
         let original = baseline
         let current = text
+        let alert = NSAlert()
+        alert.messageText = "Stage this change?"
+        alert.informativeText = "It will leave the diff view and be ready to commit."
+        alert.addButton(withTitle: "Stage")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard baseline == original, text == current else {
+            error = "This change moved. Try again."
+            return
+        }
+        save()
+        guard !unsaved else { return }
         stagingID = UUID()
         writing = true
         Task {
@@ -672,9 +682,19 @@ struct ContentView: View {
     }
 }
 
+final class StageButton: NSButton {
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+}
+
 final class ProseTextView: NSTextView {
-    var stageTargets: [(id: Int, range: NSRange)] = []
-    private let stageButton = NSButton()
+    var stageTargets: [(id: Int, range: NSRange, anchor: Int)] = []
+    private let stageButton = StageButton()
+    private var followsPointer = false
     private var stageAction: ((Int) -> Void)?
     private var hoverID: Int?
     private var buttonID: Int?
@@ -711,14 +731,18 @@ final class ProseTextView: NSTextView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let stageTracking { removeTrackingArea(stageTracking) }
-        let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(tracking)
         stageTracking = tracking
     }
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if !stageButton.isHidden && stageButton.frame.contains(point) { return }
+        if !stageButton.isHidden && stageButton.frame.contains(point) {
+            NSCursor.pointingHand.set()
+            return
+        }
+        followsPointer = true
         let offset = characterIndexForInsertion(at: point)
         hoverID = stageTargets.first { NSLocationInRange(offset, $0.range) }?.id
         refreshStageButton()
@@ -726,23 +750,51 @@ final class ProseTextView: NSTextView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        followsPointer = true
         hoverID = nil
         refreshStageButton()
         super.mouseExited(with: event)
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if !stageButton.isHidden { addCursorRect(stageButton.frame, cursor: .pointingHand) }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if !stageButton.isHidden && stageButton.frame.contains(convert(event.locationInWindow, from: nil)) {
+            NSCursor.pointingHand.set()
+        } else { super.cursorUpdate(with: event) }
+    }
+
+    func selectionMoved() {
+        followsPointer = false
+        hoverID = nil
+        refreshStageButton()
+    }
+
     func refreshStageButton() {
         let editing = window?.firstResponder === self ? stageTargets.first { NSLocationInRange(selectedRange().location, $0.range) } : nil
-        guard let target = stageTargets.first(where: { $0.id == hoverID }) ?? editing, let window else {
+        let target = followsPointer ? stageTargets.first(where: { $0.id == hoverID }) : editing
+        let oldFrame = stageButton.frame
+        let wasHidden = stageButton.isHidden
+        defer {
+            if oldFrame != stageButton.frame || wasHidden != stageButton.isHidden {
+                TooltipAnchor.hideActive()
+                window?.invalidateCursorRects(for: self)
+                window?.invalidateCursorRects(for: stageButton)
+            }
+        }
+        guard let target, let window else {
             stageButton.isHidden = true
             buttonID = nil
             return
         }
-        let rect = firstRect(forCharacterRange: NSRange(location: target.range.location, length: min(1, target.range.length)), actualRange: nil)
+        let length = min(1, max(0, string.utf16.count - target.anchor))
+        let rect = firstRect(forCharacterRange: NSRange(location: target.anchor, length: length), actualRange: nil)
         let local = convert(window.convertFromScreen(rect), from: nil)
-        let y = max(local.minY, visibleRect.minY + 8)
-        stageButton.frame = NSRect(x: bounds.width - textContainerInset.width + 8, y: y, width: 26, height: 26)
-        stageButton.isHidden = !stageButton.frame.intersects(visibleRect)
+        stageButton.frame = NSRect(x: bounds.width - textContainerInset.width + 8, y: local.minY, width: 26, height: 26)
+        stageButton.isHidden = !local.intersects(visibleRect)
         buttonID = target.id
     }
 
@@ -759,6 +811,7 @@ final class ProseTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         paragraphClicked?()
+        selectionMoved()
     }
 
     override func resignFirstResponder() -> Bool {
@@ -894,7 +947,10 @@ struct NativeEditor: NSViewRepresentable {
         func updateStageTargets() {
             guard let editor = draft.editor as? ProseTextView else { return }
             editor.stageTargets = draft.usingIndex && draft.reviewing && draft.activePath != nil && !draft.loading && !draft.writing
-                ? document.hunks.map { ($0.id, projection.displayRange($0.display)) } : []
+                ? document.hunks.map { hunk in
+                    let anchor = hunk.current.length > 0 ? document.displayOffset(for: hunk.current.location) : hunk.display.location
+                    return (hunk.id, projection.displayRange(hunk.display), projection.displayOffset(anchor))
+                } : []
             editor.refreshStageButton()
         }
 
@@ -938,7 +994,7 @@ struct NativeEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard !rendering else { return }
             updateParagraph()
-            (draft.editor as? ProseTextView)?.refreshStageButton()
+            (draft.editor as? ProseTextView)?.selectionMoved()
             guard !draft.calculating, let editor = draft.editor,
                   let source = document.sourceRange(for: projection.sourceRange(editor.selectedRange())) else { return }
             if let index = draft.changes.firstIndex(where: { source.location >= $0.range.location && source.location <= NSMaxRange($0.range) }), draft.selected != index {
