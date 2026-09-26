@@ -34,4 +34,6 @@ Use a unified comparison inspired by Fork: original paragraphs in red above curr
 
 ## Sidebar implementation
 
-The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, complete staged commit review, and explicit outgoing push review are implemented. Recovery drafts, automatic external-change reconciliation, and partial staging remain outstanding.
+The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, chapter-only and all-file visual commit review, and explicit outgoing push review are implemented. Recovery drafts, automatic external-change reconciliation, and partial staging remain outstanding.
+
+Commit reviews use private index snapshots. Chapter commits preserve unrelated staged files; all-file commits capture current repository changes. Cancel does not stage anything. Both views share the editor’s visual diff styling.

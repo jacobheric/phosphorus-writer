@@ -3,14 +3,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WriterCore
 
-private enum Paper {
+enum Paper {
     static let sheet = NSColor.white
     static let margin = Color(white: 0.975)
     static let ink = NSColor(srgbRed: 0.24, green: 0.23, blue: 0.21, alpha: 1)
     static let accent = Color(red: 0.48, green: 0.39, blue: 0.27)
 }
 
-private struct QuietButton: View {
+struct QuietButton: View {
     @Environment(\.isEnabled) private var isEnabled
     let symbol: String
     let help: String
@@ -18,7 +18,7 @@ private struct QuietButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button(action: { TooltipAnchor.hideActive(); action() }) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .regular))
                 .frame(width: 28, height: 28)
@@ -28,7 +28,7 @@ private struct QuietButton: View {
         }
         .buttonStyle(.plain)
         .opacity(isEnabled ? 1 : 0.35)
-        .help(help)
+        .background(FastTooltip(text: help))
         .accessibilityLabel(help)
     }
 }
@@ -288,11 +288,12 @@ final class Draft: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    func prepareCommit() {
+    func prepareCommit(path: String? = nil) {
         guard !loading, !writing, let repository else { return }
-        save()
-        guard !unsaved else { return }
-        let path = activePath
+        if path == nil || path == activePath {
+            save()
+            guard !unsaved else { return }
+        }
         writing = true
         Task {
             defer { writing = false }
@@ -409,11 +410,11 @@ struct ContentView: View {
                     Text("Manuscript")
                         .font(.system(size: 15, weight: .medium, design: .serif))
                     Spacer()
-                    QuietButton(symbol: "line.3.horizontal.decrease", help: draft.changedOnly ? "Show all files" : "Show only files with local changes", active: draft.changedOnly) {
+                    QuietButton(symbol: "line.3.horizontal.decrease", help: draft.changedOnly ? "All files" : "Changes only", active: draft.changedOnly) {
                         draft.changedOnly.toggle()
                     }
                     .accessibilityValue(draft.changedOnly ? "On" : "Off")
-                    QuietButton(symbol: "arrow.clockwise", help: "Refresh local changes") {
+                    QuietButton(symbol: "arrow.clockwise", help: "Refresh") {
                         draft.refreshRepository()
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
@@ -430,10 +431,19 @@ struct ContentView: View {
                                             Text(file.title).font(.system(size: 14, design: .serif)).lineLimit(1)
                                             Spacer()
                                             if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                Circle().fill(Paper.accent.opacity(0.7)).frame(width: 6, height: 6)
-                                                    .accessibilityLabel("Local changes")
+                                                QuietButton(symbol: "checkmark.circle", help: "Commit") {
+                                                    draft.prepareCommit(path: file.path)
+                                                }
+                                                .disabled(draft.loading || draft.writing)
+                                                .accessibilityLabel("Commit " + file.title)
                                             }
-                                        }.padding(.vertical, 5).tag(file.path).listRowSeparator(.hidden).listRowBackground(Color.clear).help(file.path + (file.changed ? " — local changes" : ""))
+                                        }.accessibilityElement(children: .contain)
+                                        .accessibilityActions {
+                                            if file.changed || (file.path == draft.activePath && draft.unsaved) {
+                                                Button("Commit") { draft.prepareCommit(path: file.path) }
+                                            }
+                                        }
+                                        .padding(.vertical, 2).tag(file.path).listRowSeparator(.hidden).listRowBackground(Color.clear).help(file.path + (file.changed ? " — local changes" : ""))
                                     }
                                 }
                             }
@@ -471,7 +481,7 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                QuietButton(symbol: "folder", help: "Open manuscript…", action: draft.openManuscript)
+                QuietButton(symbol: "folder", help: "Open", action: draft.openManuscript)
                 QuietButton(symbol: "text.badge.checkmark", help: draft.reviewing ? "Hide changes" : "Show changes", active: draft.reviewing) {
                     draft.reviewing.toggle()
                 }
@@ -479,50 +489,28 @@ struct ContentView: View {
                 HStack(spacing: 4) {
                     QuietButton(symbol: "chevron.up", help: "Previous change") { draft.navigate(-1) }
                     QuietButton(symbol: "chevron.down", help: "Next change") { draft.navigate(1) }
-                    QuietButton(symbol: "arrow.uturn.backward", help: "Restore selected change", action: draft.restore)
+                    QuietButton(symbol: "arrow.uturn.backward", help: "Restore", action: draft.restore)
                 }
                 .disabled(draft.changes.isEmpty || draft.calculating)
-                QuietButton(symbol: "doc.on.doc", help: "Compare with…", action: draft.chooseBaseline)
-                QuietButton(symbol: "square.and.arrow.down", help: "Save · ⌘S", action: draft.save)
+                QuietButton(symbol: "doc.on.doc", help: "Compare", action: draft.chooseBaseline)
+                QuietButton(symbol: "square.and.arrow.down", help: "Save", action: draft.save)
                     .disabled(draft.loading || draft.writing)
-                QuietButton(symbol: "checkmark.circle", help: "Stage chapter and review commit…", action: draft.prepareCommit)
+                QuietButton(symbol: "checkmark.circle", help: "Commit") { draft.prepareCommit() }
+
                     .disabled(draft.repository == nil || draft.loading || draft.writing)
-                QuietButton(symbol: "arrow.up", help: "Review outgoing commits and push…", action: draft.preparePush)
+                QuietButton(symbol: "arrow.up", help: "Push", action: draft.preparePush)
                     .disabled(draft.repository == nil || draft.loading || draft.writing)
             }
         }
         .sheet(isPresented: Binding(get: { draft.commitPreview != nil }, set: { if !$0 { draft.commitPreview = nil } })) {
             if let preview = draft.commitPreview {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Commit to \(preview.branch)").font(.title2)
-                    Text("Includes the current chapter and all previously staged files. Closing this review leaves them staged.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text(preview.files)
-                            Divider()
-                            Text(preview.diff)
-                        }.font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    TextField("Commit message", text: $draft.commitMessage).textFieldStyle(.roundedBorder)
-                    HStack {
-                        Button("Cancel") { draft.commitPreview = nil }.keyboardShortcut(.cancelAction)
-                        Spacer()
-                        Button(draft.writing ? "Committing…" : "Commit", action: draft.commit)
-                            .keyboardShortcut(.defaultAction)
-                            .disabled(draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }.padding(24).frame(width: 700, height: 520).disabled(draft.writing).interactiveDismissDisabled(draft.writing)
-                    .alert("Could not commit", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
-                        Button("OK") { draft.error = nil }
-                    } message: { Text(draft.error ?? "") }
+                CommitReview(draft: draft, preview: preview)
             }
         }
         .sheet(isPresented: Binding(get: { draft.pushPreview != nil }, set: { if !$0 { draft.pushPreview = nil } })) {
             if let preview = draft.pushPreview {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Push to \(preview.remote)/\(preview.destination.replacingOccurrences(of: "refs/heads/", with: ""))").font(.title2)
-                    Text("These commits will be published. Uncommitted edits stay on this Mac.").foregroundStyle(.secondary)
                     ScrollView { Text(preview.commits).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     HStack {
                         Button("Cancel") { draft.pushPreview = nil }.keyboardShortcut(.cancelAction)
@@ -597,53 +585,9 @@ struct NativeEditor: NSViewRepresentable {
             rendering = true
             defer { rendering = false }
             document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 8
-            paragraph.paragraphSpacing = 8
-            let font = NSFont(name: "Charter", size: 20) ?? .systemFont(ofSize: 20)
-            let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Paper.ink, .paragraphStyle: paragraph]
-            let result = NSMutableAttributedString(string: document.text, attributes: base)
-            for span in document.spans {
-                switch span.kind {
-                case .original:
-                    result.addAttribute(.toolTip, value: "Original committed text", range: span.display)
-                    result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.13), range: span.display)
-                    result.addAttribute(.foregroundColor, value: Paper.ink.withAlphaComponent(0.72), range: span.display)
-                case .current:
-                    result.addAttribute(.toolTip, value: "Current draft · click to edit", range: span.display)
-                    result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.14), range: span.display)
-                case .label:
-                    result.addAttributes([.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor], range: span.display)
-                case .unchanged: break
-                }
-            }
-            if draft.reviewing {
-                for change in Review.changes(from: draft.baseline, to: draft.text) where change.range.length > 0 {
-                    for span in document.spans {
-                        guard let source = span.source else { continue }
-                        let overlap = NSIntersectionRange(source, change.range)
-                        guard overlap.length > 0 else { continue }
-                        let range = NSRange(location: span.display.location + overlap.location - source.location, length: overlap.length)
-                        result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.33), range: range)
-                    }
-                }
-                for change in Review.changes(from: draft.text, to: draft.baseline) where change.range.length > 0 {
-                    // Original blocks follow the baseline in order; locate them without adding their text to the saved draft.
-                    var originalPosition = 0
-                    for span in document.spans {
-                        if span.kind == .original || span.kind == .unchanged {
-                            let oldRange = NSRange(location: originalPosition, length: span.display.length)
-                            let overlap = NSIntersectionRange(oldRange, change.range)
-                            if span.kind == .original && overlap.length > 0 {
-                                result.addAttribute(.backgroundColor, value: NSColor.systemRed.withAlphaComponent(0.3), range: NSRange(location: span.display.location + overlap.location - oldRange.location, length: overlap.length))
-                            }
-                            originalPosition += span.display.length
-                        }
-                    }
-                }
-            }
-            editor.textStorage?.setAttributedString(result)
-            editor.typingAttributes = base
+            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
+            editor.textStorage?.setAttributedString(rendered.text)
+            editor.typingAttributes = rendered.typing
             editor.setSelectedRange(NSRange(location: document.displayOffset(for: min(sourceCursor, draft.text.utf16.count)), length: 0))
             lastText = draft.text
             lastOriginal = draft.baseline
