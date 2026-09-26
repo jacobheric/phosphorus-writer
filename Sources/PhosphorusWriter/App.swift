@@ -67,6 +67,13 @@ final class Draft: ObservableObject {
     @Published var activePath: String?
     @Published var sidebarPath: String?
     @Published var loading = false
+    @Published var writing = false
+    @Published var commitPreview: CommitPreview?
+    @Published var pushPreview: PushPreview?
+    @Published var commitMessage = ""
+    @Published var notice: String?
+    private var fileURL: URL?
+    private var diskSnapshot: Data?
     private var repositoryDirectory: URL?
     private var loadID = UUID()
     private var scanID = UUID()
@@ -86,7 +93,10 @@ final class Draft: ObservableObject {
         do {
             let url = URL(fileURLWithPath: arguments[index + 1])
             repositoryDirectory = url.deletingLastPathComponent()
-            let contents = try String(contentsOf: url, encoding: .utf8)
+            let data = try Data(contentsOf: url)
+            guard let contents = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            fileURL = url
+            diskSnapshot = data
             text = contents
             baseline = contents
             savedText = contents
@@ -98,6 +108,7 @@ final class Draft: ObservableObject {
     }
 
     func openManuscript() {
+        guard !writing else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -106,6 +117,8 @@ final class Draft: ObservableObject {
         loadID = UUID()
         activePath = nil
         sidebarPath = nil
+        fileURL = nil
+        diskSnapshot = nil
         savedText = text
         repositoryDirectory = url
         refreshRepository(selectFirst: true)
@@ -133,7 +146,7 @@ final class Draft: ObservableObject {
     }
 
     func selectFile(_ file: ManuscriptFile) {
-        guard file.path != sidebarPath, let repository else { return }
+        guard !writing, file.path != sidebarPath, let repository else { return }
         guard canDiscard() else { return }
         let request = UUID()
         loadID = request
@@ -152,6 +165,8 @@ final class Draft: ObservableObject {
                 activePath = file.path
                 baseline = contents.original
                 text = contents.current
+                fileURL = repository.root.appendingPathComponent(file.path)
+                diskSnapshot = Data(contents.current.utf8)
                 savedText = contents.current
                 title = file.title
                 selected = 0
@@ -169,13 +184,17 @@ final class Draft: ObservableObject {
     }
 
     func canDiscard() -> Bool {
+        guard !writing else { return false }
         guard text != savedText else { return true }
         let alert = NSAlert()
         alert.messageText = "Discard unsaved draft?"
-        alert.informativeText = "Save a draft copy first if you want to keep these edits."
+        alert.informativeText = "Save your edits before leaving this chapter."
         alert.addButton(withTitle: "Keep editing")
+        alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Discard")
-        return alert.runModal() == .alertSecondButtonReturn
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn { save(); return !unsaved }
+        return response == .alertThirdButtonReturn
     }
 
     func refresh() {
@@ -202,7 +221,7 @@ final class Draft: ObservableObject {
     }
 
     func restore() {
-        guard !calculating, changes.indices.contains(selected), let editor else { return }
+        guard !writing, !calculating, changes.indices.contains(selected), let editor else { return }
         let change = changes[selected]
         editorCoordinator?.replace(change.range, with: change.original)
         editor.undoManager?.setActionName("Restore original")
@@ -215,7 +234,10 @@ final class Draft: ObservableObject {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let contents = try String(contentsOf: url, encoding: .utf8)
+            let data = try Data(contentsOf: url)
+            guard let contents = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            fileURL = url
+            diskSnapshot = data
             loadID = UUID()
             scanID = UUID()
             loading = false
@@ -234,6 +256,7 @@ final class Draft: ObservableObject {
     }
 
     func chooseBaseline() {
+        guard !writing else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.plainText, .text]
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -243,13 +266,93 @@ final class Draft: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    func save() {
+        guard !loading, !writing else { return }
+        do {
+            if let fileURL {
+                if !unsaved { return }
+                diskSnapshot = try RepositoryWrites.save(text, to: fileURL, expected: diskSnapshot)
+            } else {
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = "\(title).md"
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                let data = Data(text.utf8)
+                try data.write(to: url, options: .atomic)
+                fileURL = url
+                diskSnapshot = data
+                repositoryDirectory = url.deletingLastPathComponent()
+            }
+            savedText = text
+            notice = "Saved"
+            refreshRepository()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func prepareCommit() {
+        guard !loading, !writing, let repository else { return }
+        save()
+        guard !unsaved else { return }
+        let path = activePath
+        writing = true
+        Task {
+            defer { writing = false }
+            do {
+                commitPreview = try await Task.detached { try RepositoryWrites.prepareCommit(at: repository.root, path: path) }.value
+                commitMessage = ""
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func commit() {
+        guard !writing, let repository, let preview = commitPreview else { return }
+        let message = commitMessage
+        writing = true
+        Task {
+            defer { writing = false }
+            do {
+                try await Task.detached { try RepositoryWrites.commit(preview, message: message, at: repository.root) }.value
+                commitPreview = nil
+                notice = "Committed"
+                if let file = repository.files.first(where: { $0.path == activePath }) {
+                    let contents = try await Task.detached { try repository.read(file) }.value
+                    baseline = contents.original
+                    refresh()
+                }
+                refreshRepository()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func preparePush() {
+        guard !writing, !loading, let repository else { return }
+        writing = true
+        Task {
+            defer { writing = false }
+            do {
+                pushPreview = try await Task.detached { try RepositoryWrites.preparePush(at: repository.root) }.value
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func push() {
+        guard !writing, let repository, let preview = pushPreview else { return }
+        writing = true
+        Task {
+            defer { writing = false }
+            do {
+                try await Task.detached { try RepositoryWrites.push(preview, at: repository.root) }.value
+                pushPreview = nil
+                notice = "Pushed"
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     func saveCopy() {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(title)-draft.md"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
-            savedText = text
         }
         catch { self.error = error.localizedDescription }
     }
@@ -269,7 +372,7 @@ struct WriterApp: App {
     @NSApplicationDelegateAdaptor(Lifecycle.self) private var lifecycle
     @StateObject private var draft = Draft()
     var body: some Scene {
-        WindowGroup("Phosphorus Writer") {
+        WindowGroup("Phosphorus") {
             ContentView(draft: draft)
                 .frame(minWidth: 850, minHeight: 580)
                 .preferredColorScheme(.light)
@@ -290,6 +393,7 @@ struct WriterApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Markdown…", action: draft.openDraft).keyboardShortcut("o")
+                Button("Save", action: draft.save).keyboardShortcut("s").disabled(draft.loading || draft.writing)
                 Button("Save Draft Copy…", action: draft.saveCopy).keyboardShortcut("s", modifiers: [.command, .shift])
             }
         }
@@ -349,9 +453,11 @@ struct ContentView: View {
             }.frame(width: 245).background(Paper.margin)
             Rectangle().fill(Paper.accent.opacity(0.12)).frame(width: 1)
             VStack(spacing: 0) {
-                NativeEditor(draft: draft).disabled(draft.loading)
+                NativeEditor(draft: draft).disabled(draft.loading || draft.writing)
                 HStack {
                     Text("\(draft.text.split(whereSeparator: { $0.isWhitespace }).count) words")
+                    Spacer()
+                    Text(draft.writing ? "Working…" : draft.unsaved ? "Unsaved" : draft.notice ?? "")
                     Spacer()
                     Text(draft.calculating ? "Updating review…" : "\(draft.changes.count) changes")
                 }.font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.vertical, 16)
@@ -377,10 +483,59 @@ struct ContentView: View {
                 }
                 .disabled(draft.changes.isEmpty || draft.calculating)
                 QuietButton(symbol: "doc.on.doc", help: "Compare with…", action: draft.chooseBaseline)
-                QuietButton(symbol: "square.and.arrow.down", help: "Save draft copy…", action: draft.saveCopy)
+                QuietButton(symbol: "square.and.arrow.down", help: "Save · ⌘S", action: draft.save)
+                    .disabled(draft.loading || draft.writing)
+                QuietButton(symbol: "checkmark.circle", help: "Stage chapter and review commit…", action: draft.prepareCommit)
+                    .disabled(draft.repository == nil || draft.loading || draft.writing)
+                QuietButton(symbol: "arrow.up", help: "Review outgoing commits and push…", action: draft.preparePush)
+                    .disabled(draft.repository == nil || draft.loading || draft.writing)
             }
         }
-        .alert("Could not complete action", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
+        .sheet(isPresented: Binding(get: { draft.commitPreview != nil }, set: { if !$0 { draft.commitPreview = nil } })) {
+            if let preview = draft.commitPreview {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Commit to \(preview.branch)").font(.title2)
+                    Text("Includes the current chapter and all previously staged files. Closing this review leaves them staged.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(preview.files)
+                            Divider()
+                            Text(preview.diff)
+                        }.font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    TextField("Commit message", text: $draft.commitMessage).textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("Cancel") { draft.commitPreview = nil }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button(draft.writing ? "Committing…" : "Commit", action: draft.commit)
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }.padding(24).frame(width: 700, height: 520).disabled(draft.writing).interactiveDismissDisabled(draft.writing)
+                    .alert("Could not commit", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
+                        Button("OK") { draft.error = nil }
+                    } message: { Text(draft.error ?? "") }
+            }
+        }
+        .sheet(isPresented: Binding(get: { draft.pushPreview != nil }, set: { if !$0 { draft.pushPreview = nil } })) {
+            if let preview = draft.pushPreview {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Push to \(preview.remote)/\(preview.destination.replacingOccurrences(of: "refs/heads/", with: ""))").font(.title2)
+                    Text("These commits will be published. Uncommitted edits stay on this Mac.").foregroundStyle(.secondary)
+                    ScrollView { Text(preview.commits).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    HStack {
+                        Button("Cancel") { draft.pushPreview = nil }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button(draft.writing ? "Pushing…" : "Push", action: draft.push).keyboardShortcut(.defaultAction)
+                    }
+                }.padding(24).frame(width: 560, height: 320).disabled(draft.writing).interactiveDismissDisabled(draft.writing)
+                    .alert("Could not push", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
+                        Button("OK") { draft.error = nil }
+                    } message: { Text(draft.error ?? "") }
+            }
+        }
+        .alert("Could not complete action", isPresented: Binding(get: { draft.error != nil && draft.commitPreview == nil && draft.pushPreview == nil }, set: { if !$0 { draft.error = nil } })) {
             Button("OK") { draft.error = nil }
         } message: { Text(draft.error ?? "") }
     }
@@ -515,7 +670,7 @@ struct NativeEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            guard !draft.loading, let replacementString else { return false }
+            guard !draft.loading, !draft.writing, let replacementString else { return false }
             guard let source = document.sourceRange(for: affectedCharRange) else { NSSound.beep(); return false }
             replace(source, with: replacementString)
             return false

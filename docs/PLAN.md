@@ -1,4 +1,4 @@
-# Phosphorus Writer
+# Phosphorus
 
 A native macOS Markdown editor for reviewing and revising prose in the same window.
 
@@ -26,7 +26,7 @@ Native UI builds and interaction testing run on macOS. Portable Swift review log
 
 ## Prototype limits
 
-The first prototype is not the daily-use editor. It has no autosave, recovery, Git integration, or external-file monitoring. Open loads a draft into memory; Save copy exports it. Review compares with the opened file or a chosen original. The sample deliberately includes replacements and a deletion.
+The prototype has no autosave, recovery, or external-file monitoring. Save checks the loaded disk snapshot before an atomic write. Review compares with HEAD or a chosen original. The sample deliberately includes replacements and a deletion.
 
 ## Review layout decision
 
@@ -34,4 +34,4 @@ Use a unified comparison inspired by Fork: original paragraphs in red above curr
 
 ## Sidebar implementation
 
-The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, recovery drafts, external-change reconciliation, and Git write actions remain outstanding.
+The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, complete staged commit review, and explicit outgoing push review are implemented. Recovery drafts, automatic external-change reconciliation, and partial staging remain outstanding.

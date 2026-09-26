@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 swift build --product PhosphorusWriter
-app=.build/Phosphorus\ Writer.app
+app=.build/Phosphorus.app
 mkdir -p "$app/Contents/MacOS"
 cp .build/debug/PhosphorusWriter "$app/Contents/MacOS/PhosphorusWriter"
 cat > "$app/Contents/Info.plist" <<'PLIST'
@@ -11,7 +11,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>PhosphorusWriter</string>
 <key>CFBundleIdentifier</key><string>com.jacobheric.phosphorus-writer</string>
-<key>CFBundleName</key><string>Phosphorus Writer</string>
+<key>CFBundleName</key><string>Phosphorus</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
