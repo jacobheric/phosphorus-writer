@@ -66,19 +66,28 @@ The Format toggle styles headings, bold, italics, and code directly in the edita
 
 Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. A small commit icon marks chapters with local changes, including unsaved edits. The filter icon toggles changed-only filtering. Button labels appear after a 150 ms hover.
 
-Click a section heading to focus the sidebar, then use ↑/↓ to browse headings and files. Enter moves into the editor. Clicking a chapter directly also focuses its text. Selecting a file loads its working copy against HEAD automatically. New files compare with an empty baseline; deleted files show their committed contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
+Click a section heading to focus the sidebar, then use ↑/↓ to browse headings and files. Enter moves into the editor. Clicking a chapter directly also focuses its text. Selecting a file compares its working copy with the staged version. New files compare with an empty baseline; deleted files show their staged contents as deletions. The app asks before discarding unsaved edits when switching files. Status refreshes when the app becomes active or when you click the sidebar refresh button. It does not reload the active buffer during a status refresh.
 
 ## Save, commit, and push
 
 ⌘S and the save icon write the current draft back to its file. Save Draft Copy remains available with ⇧⌘S and does not mark the original file as saved.
 
-Each changed chapter has a commit icon. It saves that chapter if open, then reviews only that file against HEAD. The toolbar Commit icon saves the open draft and reviews all changed files in the repository. A file list lets you inspect each visual diff, including files outside the manuscript. Text uses the same red/green word highlights as the editor; binary files and mode changes are identified separately.
+Hover over a changed paragraph, or place the caret in it, to reveal a small Stage checkmark in the margin. Staging saves the draft, approves that hunk, and removes its diff from the reading view. Adjacent changed lines can form one hunk. Later edits appear as new differences against the staged text. Staging is available for repository files in Review mode, not custom comparisons.
 
-Reviews batch Git object reads and calculate each file’s diff in the background. Revisited file previews are cached while the dialog is open. Reviews capture an immutable snapshot without changing the real index. Cancel leaves staging untouched. A chapter commit preserves other staged files. Later working edits stay uncommitted; changes to HEAD, branch, or the real index require reopening the review. The app holds the Git index lock while committing and updating the index.
+Each changed chapter has a commit icon. It saves that chapter if open, then reviews only its staged changes against HEAD. The toolbar Commit icon reviews staged changes across the repository. A ready count links to this review. Stage all explicitly stages the whole chapter or repository; Unstage removes the selected file’s approvals without changing its working text. A file list lets you inspect each visual diff, including files outside the manuscript. Text uses the same red/green word highlights as the editor; binary files and mode changes are identified separately.
+
+Reviews batch Git object reads and calculate each file’s diff in the background. Revisited file previews are cached while the dialog is open. Reviews capture an immutable snapshot without changing the real index. Cancel closes the review; approvals and explicit staging actions remain staged. A chapter commit preserves other staged files. Later working edits stay uncommitted; changes to HEAD, branch, or the real index require reopening the review. The app holds the Git index lock while committing and updating the index.
 
 The up-arrow icon fetches the configured upstream branch and reviews outgoing commit subjects before a separate Push action. Push uses the reviewed commit and never forces. Set up an upstream and Git credentials outside the app first. Diverged branches require reconciliation outside the app. Save/commit/push failures keep edits in memory and show Git's error; a failed push leaves the local commit intact.
 
-Git writes are serialized within the app. Initial commits, merge/rebase resolution, partial staging, autosave, recovery, and live external-file reload remain follow-up work.
+The paragraph-staging checks use a disposable synthetic repository:
+
+```sh
+swiftc Sources/WriterCore/ReviewDocument.swift Sources/WriterCore/RepositoryWrites.swift scripts/check-staging.swift -o /tmp/phosphorus-staging-check
+/tmp/phosphorus-staging-check
+```
+
+Git writes are serialized within the app. Initial commits, merge/rebase resolution, word-level staging, autosave, recovery, and live external-file reload remain follow-up work.
 
 ## License
 

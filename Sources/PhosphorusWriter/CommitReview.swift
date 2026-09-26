@@ -33,6 +33,9 @@ struct CommitReview: View {
                     .frame(width: 230).background(Paper.margin)
                     Divider()
                 }
+                if preview.files.isEmpty {
+                    Text("No staged changes").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 if let file = selectedFile {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
@@ -61,11 +64,15 @@ struct CommitReview: View {
             }
             Divider()
             HStack(spacing: 16) {
+                Button("Stage all") { draft.changeStaging() }.help("Stage all")
+                if let file = selectedFile {
+                    Button("Unstage") { draft.changeStaging(unstage: file.path) }.help("Unstage file")
+                }
                 TextField("Message", text: $draft.commitMessage).textFieldStyle(.roundedBorder)
                 Button("Cancel") { draft.commitPreview = nil }.keyboardShortcut(.cancelAction)
                 Button(draft.writing ? "Committing…" : "Commit", action: draft.commit)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(preview.files.isEmpty || draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(24)
         }
         .frame(width: preview.chapter == nil ? 940 : 760, height: 620)

@@ -46,8 +46,7 @@ public struct ManuscriptRepository: Sendable {
         } else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let trackedAtHead = (try? Self.git(["cat-file", "-e", "HEAD:\(file.path)"], at: root)) != nil
-        let original = trackedAtHead ? try Self.git(["show", "HEAD:\(file.path)"], at: root) : ""
+        let original = try RepositoryWrites.stagedText(at: root, path: file.path)
         return (current, original)
     }
 

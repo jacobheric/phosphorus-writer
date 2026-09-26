@@ -7,13 +7,22 @@ public struct ReviewSpan: Sendable {
     public let source: NSRange?
 }
 
+public struct ReviewHunk: Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let original: NSRange
+    public let current: NSRange
+    public let display: NSRange
+}
+
 public struct ReviewDocument: Sendable {
     public let text: String
     public let spans: [ReviewSpan]
+    public let hunks: [ReviewHunk]
 
     public init(original: String, current: String, reviewing: Bool) {
         if !reviewing {
             text = current
+            hunks = []
             spans = [ReviewSpan(kind: .unchanged, display: NSRange(location: 0, length: current.utf16.count), source: NSRange(location: 0, length: current.utf16.count))]
             return
         }
@@ -35,6 +44,8 @@ public struct ReviewDocument: Sendable {
         var output = ""
         var regions: [ReviewSpan] = []
         var position = 0
+        var originalPosition = 0
+        var hunks: [ReviewHunk] = []
         func append(_ value: String, _ kind: ReviewSpan.Kind, source: NSRange? = nil) {
             regions.append(ReviewSpan(kind: kind, display: NSRange(location: output.utf16.count, length: value.utf16.count), source: source))
             output += value
@@ -43,6 +54,8 @@ public struct ReviewDocument: Sendable {
         var right = 0
         while left < before.count || right < after.count {
             if removed.contains(left) || inserted.contains(right) {
+                let sourceStart = position
+                let displayStart = output.utf16.count
                 var old = ""
                 var new = ""
                 while left < before.count && removed.contains(left) { old += before[left]; left += 1 }
@@ -55,11 +68,14 @@ public struct ReviewDocument: Sendable {
                 append(new, .current, source: NSRange(location: position, length: new.utf16.count))
                 position += new.utf16.count
                 if !new.hasSuffix("\n") { append("\n", .label) }
+                hunks.append(ReviewHunk(id: hunks.count, original: NSRange(location: originalPosition, length: old.utf16.count), current: NSRange(location: sourceStart, length: new.utf16.count), display: NSRange(location: displayStart, length: output.utf16.count - displayStart)))
+                originalPosition += old.utf16.count
             } else {
                 if right < after.count {
                     let line = after[right]
                     append(line, .unchanged, source: NSRange(location: position, length: line.utf16.count))
                     position += line.utf16.count
+                    originalPosition += line.utf16.count
                 }
                 left += 1
                 right += 1
@@ -68,6 +84,7 @@ public struct ReviewDocument: Sendable {
         if regions.isEmpty { append("", .unchanged, source: NSRange(location: 0, length: 0)) }
         text = output
         spans = regions
+        self.hunks = hunks
     }
 
     public func sourceRange(for displayRange: NSRange) -> NSRange? {

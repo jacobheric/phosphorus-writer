@@ -26,7 +26,7 @@ Native UI builds and interaction testing run on macOS. Portable Swift review log
 
 ## Prototype limits
 
-The prototype has no autosave, recovery, or external-file monitoring. Save checks the loaded disk snapshot before an atomic write. Review compares with HEAD or a chosen original. The sample deliberately includes replacements and a deletion.
+The prototype has no autosave, recovery, or external-file monitoring. Save checks the loaded disk snapshot before an atomic write. Review compares with the index or a chosen original. The sample deliberately includes replacements and a deletion.
 
 ## Review layout decision
 
@@ -34,6 +34,6 @@ Use a unified comparison inspired by Fork: original paragraphs in red above curr
 
 ## Sidebar implementation
 
-The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against HEAD in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, chapter-only and all-file visual commit review, and explicit outgoing push review are implemented. Recovery drafts, automatic external-change reconciliation, and partial staging remain outstanding.
+The prototype now discovers manuscript Markdown files through Git, groups them in reading order, marks local changes, and supports a Changed only filter. Chapter selection loads the working file against the index in background tasks. Status refresh does not overwrite the active buffer. Unsaved changes require an explicit discard before chapter switches. Atomic in-place saves, chapter-only and all-file visual commit review, and explicit outgoing push review are implemented. Paragraph staging is available on hover or edit. Recovery drafts, automatic external-change reconciliation, and word-level staging remain outstanding.
 
-Commit reviews use private index snapshots. Chapter commits preserve unrelated staged files; all-file commits capture current repository changes. Cancel does not stage anything. Both views share the editor’s visual diff styling.
+Commit reviews use private index snapshots. Chapter commits preserve unrelated staged files; all-file commits capture staged repository changes. Stage all and Unstage are explicit index changes; Cancel leaves approvals staged. Both views share the editor’s visual diff styling.

@@ -44,7 +44,7 @@ final class TooltipAnchor: NSView {
     }
 
     private func show() {
-        guard let window, window.isKeyWindow else { return }
+        guard !isHiddenOrHasHiddenAncestor, let window, window.isKeyWindow else { return }
         let content = NSHostingView(rootView: Text(label).font(.system(size: 12))
             .foregroundStyle(Color.primary).padding(.horizontal, 9).padding(.vertical, 5)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5)))

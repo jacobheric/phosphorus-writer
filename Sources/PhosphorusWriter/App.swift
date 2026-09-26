@@ -80,6 +80,14 @@ final class Draft: ObservableObject {
     @Published var pushPreview: PushPreview?
     @Published var commitMessage = ""
     @Published var notice: String?
+    @Published var usingIndex = true
+    private var stagingID = UUID()
+    var readyFiles: Int {
+        repository?.files.filter { file in
+            guard let status = file.status.first else { return false }
+            return status != " " && status != "?"
+        }.count ?? 0
+    }
     private var fileURL: URL?
     private var diskSnapshot: Data?
     private var repositoryDirectory: URL?
@@ -111,6 +119,7 @@ final class Draft: ObservableObject {
             title = url.deletingPathExtension().lastPathComponent
             if let originalIndex = arguments.firstIndex(of: "--original"), arguments.indices.contains(originalIndex + 1) {
                 baseline = try String(contentsOfFile: arguments[originalIndex + 1], encoding: .utf8)
+                usingIndex = false
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -146,6 +155,7 @@ final class Draft: ObservableObject {
                     activePath = snapshot.files.first(where: { URL(fileURLWithPath: $0.path).deletingPathExtension().lastPathComponent == title })?.path
                     sidebarPath = activePath
                 }
+                refreshStaging()
                 if selectFirst || (activePath == nil && previousRoot != snapshot.root) {
                     if let first = snapshot.files.first { selectFile(first) }
                 }
@@ -177,6 +187,7 @@ final class Draft: ObservableObject {
                 calculation?.cancel()
                 activePath = file.path
                 baseline = contents.original
+                usingIndex = true
                 text = contents.current
                 fileURL = repository.root.appendingPathComponent(file.path)
                 diskSnapshot = Data(contents.current.utf8)
@@ -261,6 +272,7 @@ final class Draft: ObservableObject {
             sidebarPath = nil
             repositoryDirectory = url.deletingLastPathComponent()
             baseline = contents
+            usingIndex = true
             text = contents
             savedText = contents
             title = url.deletingPathExtension().lastPathComponent
@@ -277,6 +289,7 @@ final class Draft: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             baseline = try String(contentsOf: url, encoding: .utf8)
+            usingIndex = false
             refresh()
         } catch { self.error = error.localizedDescription }
     }
@@ -303,6 +316,60 @@ final class Draft: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    func refreshStaging() {
+        guard usingIndex, !writing, !loading, let repository, let path = activePath else { return }
+        let request = UUID()
+        stagingID = request
+        Task {
+            do {
+                let staged = try await Task.detached { try RepositoryWrites.stagedText(at: repository.root, path: path) }.value
+                guard stagingID == request, usingIndex, !writing, activePath == path else { return }
+                if baseline != staged { baseline = staged; refresh() }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func stage(_ hunk: ReviewHunk) {
+        guard usingIndex, reviewing, !loading, !writing, let repository, let path = activePath else { return }
+        save()
+        guard !unsaved else { return }
+        let original = baseline
+        let current = text
+        stagingID = UUID()
+        writing = true
+        Task {
+            do {
+                try await Task.detached { try RepositoryWrites.stage(hunk, original: original, current: current, at: repository.root, path: path) }.value
+                baseline = try await Task.detached { try RepositoryWrites.stagedText(at: repository.root, path: path) }.value
+                notice = "Staged"
+                refresh()
+            } catch { self.error = error.localizedDescription }
+            writing = false
+            refreshRepository()
+        }
+    }
+
+    func changeStaging(unstage path: String? = nil) {
+        guard !writing, let repository, let preview = commitPreview else { return }
+        if path == nil && (preview.chapter == nil || preview.chapter == activePath) {
+            save()
+            guard !unsaved else { return }
+        }
+        stagingID = UUID()
+        writing = true
+        Task {
+            do {
+                commitPreview = try await Task.detached {
+                    if let path { try RepositoryWrites.unstage(at: repository.root, path: path) }
+                    else { try RepositoryWrites.stageAll(at: repository.root, path: preview.chapter) }
+                    return try RepositoryWrites.prepareCommit(at: repository.root, path: preview.chapter, stagedOnly: true)
+                }.value
+            } catch { self.error = error.localizedDescription }
+            writing = false
+            refreshRepository()
+        }
+    }
+
     func prepareCommit(path: String? = nil) {
         guard !loading, !writing, let repository else { return }
         if path == nil || path == activePath {
@@ -313,7 +380,7 @@ final class Draft: ObservableObject {
         Task {
             defer { writing = false }
             do {
-                commitPreview = try await Task.detached { try RepositoryWrites.prepareCommit(at: repository.root, path: path) }.value
+                commitPreview = try await Task.detached { try RepositoryWrites.prepareCommit(at: repository.root, path: path, stagedOnly: true) }.value
                 commitMessage = ""
             } catch { self.error = error.localizedDescription }
         }
@@ -540,6 +607,9 @@ struct ContentView: View {
                 HStack {
                     Text("\(draft.text.split(whereSeparator: { $0.isWhitespace }).count) words")
                     Spacer()
+                    if draft.readyFiles > 0 {
+                        Button("\(draft.readyFiles) ready") { draft.prepareCommit() }.buttonStyle(.plain).help("Commit")
+                    }
                     Text(draft.writing ? "Working…" : draft.unsaved ? "Unsaved" : draft.notice ?? "")
                     Spacer()
                     Text(draft.calculating ? "Updating review…" : "\(draft.changes.count) changes")
@@ -577,7 +647,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(get: { draft.commitPreview != nil }, set: { if !$0 { draft.commitPreview = nil } })) {
             if let preview = draft.commitPreview {
-                CommitReview(draft: draft, preview: preview)
+                CommitReview(draft: draft, preview: preview).id(preview.tree)
             }
         }
         .sheet(isPresented: Binding(get: { draft.pushPreview != nil }, set: { if !$0 { draft.pushPreview = nil } })) {
@@ -603,6 +673,79 @@ struct ContentView: View {
 }
 
 final class ProseTextView: NSTextView {
+    var stageTargets: [(id: Int, range: NSRange)] = []
+    private let stageButton = NSButton()
+    private var stageAction: ((Int) -> Void)?
+    private var hoverID: Int?
+    private var buttonID: Int?
+    private var stageTracking: NSTrackingArea?
+
+    func configureStaging(_ action: @escaping (Int) -> Void) {
+        stageAction = action
+        stageButton.image = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: "Stage change")
+        stageButton.isBordered = false
+        stageButton.contentTintColor = .secondaryLabelColor
+        let tooltip = TooltipAnchor()
+        tooltip.label = "Stage"
+        tooltip.frame = stageButton.bounds
+        tooltip.autoresizingMask = [.width, .height]
+        stageButton.addSubview(tooltip)
+        stageButton.setAccessibilityLabel("Stage change")
+        stageButton.target = self
+        stageButton.action = #selector(approveHunk)
+        stageButton.isHidden = true
+        addSubview(stageButton)
+    }
+
+    @objc private func approveHunk() {
+        guard let buttonID else { return }
+        TooltipAnchor.hideActive()
+        hoverID = nil
+        stageAction?(buttonID)
+    }
+
+    override func accessibilityChildren() -> [Any]? {
+        (super.accessibilityChildren() ?? []) + (stageButton.isHidden ? [] : [stageButton])
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let stageTracking { removeTrackingArea(stageTracking) }
+        let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(tracking)
+        stageTracking = tracking
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if !stageButton.isHidden && stageButton.frame.contains(point) { return }
+        let offset = characterIndexForInsertion(at: point)
+        hoverID = stageTargets.first { NSLocationInRange(offset, $0.range) }?.id
+        refreshStageButton()
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverID = nil
+        refreshStageButton()
+        super.mouseExited(with: event)
+    }
+
+    func refreshStageButton() {
+        let editing = window?.firstResponder === self ? stageTargets.first { NSLocationInRange(selectedRange().location, $0.range) } : nil
+        guard let target = stageTargets.first(where: { $0.id == hoverID }) ?? editing, let window else {
+            stageButton.isHidden = true
+            buttonID = nil
+            return
+        }
+        let rect = firstRect(forCharacterRange: NSRange(location: target.range.location, length: min(1, target.range.length)), actualRange: nil)
+        let local = convert(window.convertFromScreen(rect), from: nil)
+        let y = max(local.minY, visibleRect.minY + 8)
+        stageButton.frame = NSRect(x: bounds.width - textContainerInset.width + 8, y: y, width: 26, height: 26)
+        stageButton.isHidden = !stageButton.frame.intersects(visibleRect)
+        buttonID = target.id
+    }
+
     var resizeText: ((Double) -> Void)?
     var paragraphClicked: (() -> Void)?
     var focusLeft: (() -> Void)?
@@ -620,7 +763,7 @@ final class ProseTextView: NSTextView {
 
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { focusLeft?() }
+        if resigned { focusLeft?(); refreshStageButton() }
         return resigned
     }
 
@@ -647,6 +790,10 @@ struct NativeEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         let editor = ProseTextView(usingTextLayoutManager: true)
+        editor.configureStaging { [weak coordinator = context.coordinator] id in
+            guard let coordinator, let hunk = coordinator.document.hunks.first(where: { $0.id == id }) else { return }
+            coordinator.draft.stage(hunk)
+        }
         editor.resizeText = { [weak draft] step in draft?.resizeText(step) }
         editor.paragraphClicked = { [weak coordinator = context.coordinator] in coordinator?.updateParagraph() }
         editor.selectEntireSource = { [weak coordinator = context.coordinator, weak draft] in
@@ -683,6 +830,7 @@ struct NativeEditor: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.render()
+        context.coordinator.updateStageTargets()
     }
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
@@ -740,6 +888,14 @@ struct NativeEditor: NSViewRepresentable {
             lastReview = draft.reviewing
             lastFontSize = draft.fontSize
             lastFormatted = draft.formatted
+            updateStageTargets()
+        }
+
+        func updateStageTargets() {
+            guard let editor = draft.editor as? ProseTextView else { return }
+            editor.stageTargets = draft.usingIndex && draft.reviewing && draft.activePath != nil && !draft.loading && !draft.writing
+                ? document.hunks.map { ($0.id, projection.displayRange($0.display)) } : []
+            editor.refreshStageButton()
         }
 
         func updateParagraph() {
@@ -782,6 +938,7 @@ struct NativeEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard !rendering else { return }
             updateParagraph()
+            (draft.editor as? ProseTextView)?.refreshStageButton()
             guard !draft.calculating, let editor = draft.editor,
                   let source = document.sourceRange(for: projection.sourceRange(editor.selectedRange())) else { return }
             if let index = draft.changes.firstIndex(where: { source.location >= $0.range.location && source.location <= NSMaxRange($0.range) }), draft.selected != index {
