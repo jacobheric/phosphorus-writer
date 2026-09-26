@@ -15,6 +15,7 @@ struct QuietButton: View {
     let symbol: String
     let help: String
     var active = false
+    var dimWhenDisabled = true
     let action: () -> Void
 
     var body: some View {
@@ -27,7 +28,7 @@ struct QuietButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(isEnabled ? 1 : 0.35)
+        .opacity(isEnabled || !dimWhenDisabled ? 1 : 0.35)
         .background(FastTooltip(text: help))
         .accessibilityLabel(help)
     }
@@ -467,7 +468,7 @@ struct ContentView: View {
                     QuietButton(symbol: "arrow.clockwise", help: "Refresh") {
                         draft.refreshRepository()
                     }
-                }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
+                }.padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 2)
                 if draft.repository != nil {
                     ScrollViewReader { scroll in
                         ScrollView {
@@ -482,12 +483,12 @@ struct ContentView: View {
                                             Text(section).font(.system(size: 11, weight: .medium))
                                                 .foregroundStyle(.secondary)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                                .padding(.horizontal, 12).frame(height: 30)
+                                                .padding(.horizontal, 12).frame(height: 24)
                                                 .contentShape(Rectangle())
                                         }.buttonStyle(.plain)
                                             .background(sidebarFocused && sidebarCursor == "section:" + section ? Color.black.opacity(0.045) : .clear,
                                                         in: RoundedRectangle(cornerRadius: 9))
-                                            .padding(.top, 8).padding(.bottom, 4)
+                                            .padding(.top, 4).padding(.bottom, 2)
                                             .id("section:" + section)
                                         ForEach(files) { file in
                                             HStack(spacing: 4) {
@@ -498,7 +499,7 @@ struct ContentView: View {
                                                 }.buttonStyle(.plain)
                                                     .accessibilityAddTraits(file.path == draft.sidebarPath ? .isSelected : [])
                                                 if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                    QuietButton(symbol: "checkmark.circle", help: "Commit") {
+                                                    QuietButton(symbol: "checkmark.circle", help: "Commit", dimWhenDisabled: draft.writing) {
                                                         draft.prepareCommit(path: file.path)
                                                     }
                                                     .disabled(draft.loading || draft.writing)
