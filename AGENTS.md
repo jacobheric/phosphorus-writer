@@ -4,7 +4,7 @@ Use idiomatic Swift. Prefer simple value types and pure functions for review log
 
 Use branches named jacob/[feature-name]. Keep prose plain and comments short; explain why only when needed.
 
-Never copy or modify the Dew manuscript as a fixture. Use synthetic text. Preserve exact source text and Unicode boundaries. Test diff restoration and Git state transitions.
+Never copy or modify private manuscripts as fixtures. Use synthetic text. Preserve exact source text and Unicode boundaries. Test diff restoration and Git state transitions.
 
 Run `swift test`. Native UI verification requires macOS. Do not claim native UI behavior was tested from Linux.
 

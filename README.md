@@ -54,3 +54,7 @@ Reviews capture an immutable snapshot without changing the real index. Cancel le
 The up-arrow icon fetches the configured upstream branch and reviews outgoing commit subjects before a separate Push action. Push uses the reviewed commit and never forces. Set up an upstream and Git credentials outside the app first. Diverged branches require reconciliation outside the app. Save/commit/push failures keep edits in memory and show Git's error; a failed push leaves the local commit intact.
 
 Git writes are serialized within the app. Initial commits, merge/rebase resolution, partial staging, autosave, recovery, and live external-file reload remain follow-up work.
+
+## License
+
+[MIT](LICENSE) © 2026 Jacob Heric.
