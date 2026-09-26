@@ -2,6 +2,31 @@
 
 A native macOS manuscript editor with Markdown and integrated revision review.
 
+## Install and update
+
+Requires macOS 14 or later, Git, and a Swift 6 toolchain with the macOS SDK.
+Save your work and quit Phosphorus, then run this from the repository:
+
+```sh
+./scripts/install-app.sh
+```
+
+This builds an optimized app and installs it at `/Applications/Phosphorus.app`.
+Open it from Finder or Spotlight and choose Keep in Dock from its Dock menu.
+Use the folder button to open your manuscript repository. ⌘S saves your edits.
+
+To update after improvements merge into `main`, quit the app and run:
+
+```sh
+git switch main
+git pull --ff-only
+./scripts/install-app.sh
+```
+
+The installer replaces the app while keeping its preferences and your manuscript files.
+Updates are manual for now. To install only for your user, use
+`./scripts/install-app.sh "$HOME/Applications"` instead.
+
 ## Run the prototype
 
 Requires macOS 14 or later and a Swift 6 toolchain with the macOS SDK.
