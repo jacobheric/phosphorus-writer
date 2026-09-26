@@ -13,6 +13,12 @@ struct CheckReview {
                     restored.replaceCharacters(in: change.range, with: change.original)
                 }
                 precondition(restored as String == original)
+                let replayed = NSMutableString(string: original)
+                for change in Review.reversed(Review.changes(from: original, to: current)).reversed() {
+                    precondition(replayed.substring(with: change.range) == change.replacement)
+                    replayed.replaceCharacters(in: change.range, with: change.original)
+                }
+                precondition(replayed as String == current)
                 count += 1
             }
         }
@@ -35,6 +41,6 @@ struct CheckReview {
         }
         let deletion = Review.changes(from: "hello world", to: "hello")
         precondition(deletion.count == 1 && deletion[0].range == NSRange(location: 5, length: 0))
-        print("Passed \(count) exact round trips and 121 projection/source checks, plus pure-deletion anchor check.")
+        print("Passed \(count) exact forward/reverse round trips and 121 projection/source checks, plus pure-deletion anchor check.")
     }
 }

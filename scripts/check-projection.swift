@@ -9,6 +9,11 @@ struct CheckProjection {
             let document = ReviewDocument(original: old, current: current, reviewing: reviewing)
             for active in [nil, Optional((current as NSString).paragraphRange(for: (current as NSString).range(of: "new")))] {
                 let hidden = MarkdownStyle.hiddenMarkers(in: document, original: old, current: current, activeParagraph: active)
+                let cached = MarkdownStyle.hiddenMarkers(in: document, original: old, current: current, activeParagraph: nil).filter { marker in
+                    guard let active, let source = document.sourceRange(for: marker) else { return true }
+                    return NSIntersectionRange(source, active).length == 0
+                }
+                precondition(cached == hidden)
                 let projection = TextProjection(document.text, hiding: hidden)
                 precondition(!projection.text.contains("# "))
                 precondition(!projection.text.contains("*Quiet.*"))

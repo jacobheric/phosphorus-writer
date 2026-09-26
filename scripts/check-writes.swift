@@ -28,7 +28,13 @@ struct CheckWrites {
         precondition(tryGit(["show", ":notes.md"], at: root) == "Staged elsewhere\n")
         precondition(!tryGit(["show", "HEAD:manuscript/chapters/01.md"], at: root).contains("Later edit"))
         let before = tryGit(["write-tree"], at: root)
+        let unusualPath = "space 🌅\tline\nbreak.md"
+        let largeText = String(repeating: "Synthetic 🌅 prose\r\n", count: 10_000)
+        try largeText.write(to: root.appendingPathComponent(unusualPath), atomically: true, encoding: .utf8)
+        try Data(repeating: 0, count: 200_000).write(to: root.appendingPathComponent("large-binary.dat"))
         let all = try RepositoryWrites.prepareCommit(at: root, path: nil)
+        precondition(all.files.contains { $0.path == unusualPath && $0.current == largeText && $0.original == "" })
+        precondition(all.files.contains { $0.path == "large-binary.dat" && $0.current == nil })
         precondition(tryGit(["write-tree"], at: root) == before)
         precondition(all.files.contains { $0.path == "notes.md" })
         precondition(all.files.contains { $0.path == "deleted.md" && $0.status == "D" && $0.current == "" })
