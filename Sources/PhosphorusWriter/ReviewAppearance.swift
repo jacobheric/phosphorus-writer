@@ -2,7 +2,7 @@ import AppKit
 import WriterCore
 
 enum ReviewAppearance {
-    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true, fontSize: Double = 20, formatted: Bool = false) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
+    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true, fontSize: Double = 20, formatted: Bool = false, changes: [Change]? = nil) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = fontSize * 0.4
         paragraph.paragraphSpacing = fontSize * 0.4
@@ -24,7 +24,8 @@ enum ReviewAppearance {
             }
         }
         if reviewing {
-            for change in Review.changes(from: original, to: current) where change.range.length > 0 {
+            let changes = changes ?? Review.changes(from: original, to: current)
+            for change in changes where change.range.length > 0 {
                 for span in document.spans {
                     guard let source = span.source else { continue }
                     let overlap = NSIntersectionRange(source, change.range)
@@ -33,7 +34,7 @@ enum ReviewAppearance {
                     result.addAttribute(.backgroundColor, value: NSColor.systemGreen.withAlphaComponent(0.33), range: range)
                 }
             }
-            for change in Review.changes(from: current, to: original) where change.range.length > 0 {
+            for change in Review.reversed(changes) where change.range.length > 0 {
                 // Original blocks follow the baseline in order; locate them without adding their text to the saved draft.
                 var originalPosition = 0
                 for span in document.spans {

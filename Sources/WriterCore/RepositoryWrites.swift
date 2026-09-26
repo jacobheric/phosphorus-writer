@@ -39,9 +39,10 @@ public enum RepositoryWrites {
     public static func prepareCommit(at root: URL, path: String?) throws -> CommitPreview {
         let branch = try git(["symbolic-ref", "--short", "HEAD"], at: root).trimmingCharacters(in: .newlines)
         guard try git(["ls-files", "-u"], at: root).isEmpty else { throw failure("Resolve conflicts first.") }
-        for marker in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"] {
-            let location = try git(["rev-parse", "--git-path", marker], at: root).trimmingCharacters(in: .newlines)
-            let url = URL(fileURLWithPath: location, relativeTo: root)
+        let markers = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]
+        let locations = try git(["rev-parse"] + markers.flatMap { ["--git-path", $0] }, at: root)
+        for location in locations.split(separator: "\n") {
+            let url = URL(fileURLWithPath: String(location), relativeTo: root)
             guard !FileManager.default.fileExists(atPath: url.path) else { throw failure("Finish the current Git operation first.") }
         }
         let head = try head(at: root)
@@ -50,15 +51,29 @@ public enum RepositoryWrites {
             try git(["read-tree", path == nil ? indexTree : head], at: root, index: index)
             try git(path.map { ["add", "--", ":(literal)" + $0] } ?? ["add", "-A"], at: root, index: index)
             let tree = try git(["write-tree"], at: root, index: index)
-            let records = try git(["diff", "--name-status", "--no-renames", "-z", head, tree], at: root)
+            let records = try git(["diff", "--raw", "--no-abbrev", "--no-renames", "-z", head, tree], at: root)
                 .split(separator: "\0").map(String.init)
-            var files: [CommitFile] = []
+            var entries: [(path: String, fields: [String])] = []
+            guard records.count.isMultiple(of: 2) else { throw failure("Could not read changed files.") }
             for offset in stride(from: 0, to: records.count, by: 2) {
-                let path = records[offset + 1]
-                let old = try blob(head, path: path, at: root)
-                let new = try blob(tree, path: path, at: root)
-                files.append(CommitFile(path: path, status: records[offset], original: old.text, current: new.text,
-                                        oldMode: old.mode, newMode: new.mode))
+                let fields = records[offset].dropFirst().split(separator: " ").map(String.init)
+                guard fields.count == 5 else { throw failure("Could not read changed files.") }
+                entries.append((records[offset + 1], fields))
+            }
+            let objectIDs: [String] = entries.flatMap { entry -> [String] in
+                [0, 1].filter { entry.fields[$0] != "160000" }.map { entry.fields[$0 + 2] }
+            }
+            let ids = Set(objectIDs.filter { !$0.allSatisfy { $0 == "0" } })
+            let blobs = try readBlobs(ids.sorted(), at: root)
+            func text(_ id: String, mode: String) -> String? {
+                if mode == "000000" { return "" }
+                guard mode != "160000", let bytes = blobs[id], !bytes.contains(0) else { return nil }
+                return String(data: bytes, encoding: .utf8)
+            }
+            let files = entries.map { entry in
+                let fields = entry.fields
+                return CommitFile(path: entry.path, status: fields[4], original: text(fields[2], mode: fields[0]), current: text(fields[3], mode: fields[1]),
+                                  oldMode: fields[0] == "000000" ? "" : fields[0], newMode: fields[1] == "000000" ? "" : fields[1])
             }
             guard !files.isEmpty else { throw failure("No changes to commit.") }
             return CommitPreview(tree: tree, indexTree: indexTree, head: head, branch: branch, chapter: path, files: files)
@@ -96,16 +111,21 @@ public enum RepositoryWrites {
         }
     }
 
-    private static func blob(_ tree: String, path: String, at root: URL) throws -> (text: String?, mode: String) {
-        let entry = try git(["ls-tree", "-z", tree, "--", ":(literal)" + path], at: root)
-        guard !entry.isEmpty else { return ("", "") }
-        let fields = entry.prefix(while: { $0 != "\t" }).split(separator: " ")
-        guard fields.count == 3 else { throw failure("Could not read file.") }
-        let mode = String(fields[0])
-        guard fields[1] == "blob" else { return (nil, mode) }
-        let bytes = try gitData(["cat-file", "blob", String(fields[2])], at: root)
-        let text = bytes.contains(0) ? nil : String(data: bytes, encoding: .utf8)
-        return (text, mode)
+    private static func readBlobs(_ ids: [String], at root: URL) throws -> [String: Data] {
+        guard !ids.isEmpty else { return [:] }
+        let data = try gitData(["cat-file", "--batch"], at: root, input: Data((ids.joined(separator: "\n") + "\n").utf8))
+        var cursor = 0
+        var result: [String: Data] = [:]
+        for id in ids {
+            guard let newline = data[cursor...].firstIndex(of: 10) else { throw failure("Incomplete Git object.") }
+            let fields = String(decoding: data[cursor..<newline], as: UTF8.self).split(separator: " ")
+            guard fields.count == 3, fields[0] == id, let size = Int(fields[2]), size >= 0 else { throw failure("Could not read Git object.") }
+            cursor = newline + 1
+            guard size < data.count - cursor, data[cursor + size] == 10 else { throw failure("Incomplete Git object.") }
+            if fields[1] == "blob" { result[id] = data.subdata(in: cursor..<(cursor + size)) }
+            cursor += size + 1
+        }
+        return result
     }
 
     private static func withIndex<T>(_ action: (String) throws -> T) throws -> T {
@@ -150,7 +170,7 @@ public enum RepositoryWrites {
         String(decoding: try gitData(arguments, at: root, index: index), as: UTF8.self).trimmingCharacters(in: .newlines)
     }
 
-    private static func gitData(_ arguments: [String], at root: URL, index: String? = nil) throws -> Data {
+    private static func gitData(_ arguments: [String], at root: URL, index: String? = nil, input: Data? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
@@ -168,7 +188,18 @@ public enum RepositoryWrites {
         let errorFile = try FileHandle(forWritingTo: errorURL)
         defer { try? errorFile.close(); try? FileManager.default.removeItem(at: errorURL) }
         process.standardError = errorFile
-        process.standardInput = FileHandle.nullDevice
+        let inputURL = FileManager.default.temporaryDirectory.appendingPathComponent("phosphorus-input-" + UUID().uuidString)
+        var inputFile: FileHandle?
+        defer {
+            try? inputFile?.close()
+            if input != nil { try? FileManager.default.removeItem(at: inputURL) }
+        }
+        if let input {
+            // A file avoids blocking on stdin while Git is filling its stdout pipe.
+            try input.write(to: inputURL)
+            inputFile = try FileHandle(forReadingFrom: inputURL)
+        }
+        process.standardInput = inputFile ?? FileHandle.nullDevice
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

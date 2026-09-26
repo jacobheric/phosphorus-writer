@@ -6,6 +6,7 @@ struct CommitReview: View {
     @ObservedObject var draft: Draft
     let preview: CommitPreview
     @State private var selection: String?
+    @State private var prepared: [String: PreparedCommitText] = [:]
 
     private var selectedFile: CommitFile? {
         preview.files.first { $0.path == selection } ?? preview.files.first
@@ -43,8 +44,12 @@ struct CommitReview: View {
                         if file.oldMode != file.newMode, !file.oldMode.isEmpty, !file.newMode.isEmpty {
                             Text("Mode: \(file.oldMode) → \(file.newMode)").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24)
                         }
-                        if let original = file.original, let current = file.current {
-                            CommitText(original: original, current: current).id(file.path)
+                        if file.original != nil, file.current != nil {
+                            if let content = prepared[file.path] {
+                                CommitText(content: content).id(file.path)
+                            } else {
+                                ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
                         } else {
                             VStack(spacing: 12) {
                                 Image(systemName: "doc").font(.largeTitle)
@@ -65,6 +70,15 @@ struct CommitReview: View {
         }
         .frame(width: preview.chapter == nil ? 940 : 760, height: 620)
         .background(Color(nsColor: Paper.sheet))
+        .task(id: selectedFile?.path) {
+            guard let file = selectedFile, prepared[file.path] == nil,
+                  let original = file.original, let current = file.current else { return }
+            let content = await Task.detached(priority: .userInitiated) {
+                PreparedCommitText(original: original, current: current)
+            }.value
+            guard !Task.isCancelled else { return }
+            prepared[file.path] = content
+        }
         .disabled(draft.writing).interactiveDismissDisabled(draft.writing)
         .alert("Could not commit", isPresented: Binding(get: { draft.error != nil }, set: { if !$0 { draft.error = nil } })) {
             Button("OK") { draft.error = nil }
@@ -72,9 +86,22 @@ struct CommitReview: View {
     }
 }
 
-private struct CommitText: NSViewRepresentable {
+private struct PreparedCommitText: Sendable {
     let original: String
     let current: String
+    let document: ReviewDocument
+    let changes: [Change]
+
+    init(original: String, current: String) {
+        self.original = original
+        self.current = current
+        document = ReviewDocument(original: original, current: current, reviewing: true)
+        changes = Review.changes(from: original, to: current)
+    }
+}
+
+private struct CommitText: NSViewRepresentable {
+    let content: PreparedCommitText
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -87,8 +114,7 @@ private struct CommitText: NSViewRepresentable {
         editor.textContainer?.widthTracksTextView = true
         editor.textContainerInset = NSSize(width: 24, height: 20)
         editor.backgroundColor = Paper.sheet
-        let document = ReviewDocument(original: original, current: current, reviewing: true)
-        editor.textStorage?.setAttributedString(ReviewAppearance.render(document, original: original, current: current).text)
+        editor.textStorage?.setAttributedString(ReviewAppearance.render(content.document, original: content.original, current: content.current, changes: content.changes).text)
         scroll.documentView = editor
         scroll.hasVerticalScroller = true
         scroll.backgroundColor = Paper.sheet

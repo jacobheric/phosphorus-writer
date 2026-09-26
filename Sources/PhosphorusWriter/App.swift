@@ -502,7 +502,6 @@ struct ContentView: View {
                                                     QuietButton(symbol: "checkmark.circle", help: "Commit") {
                                                         draft.prepareCommit(path: file.path)
                                                     }
-                                                    .disabled(draft.writing)
                                                     .accessibilityLabel("Commit " + file.title)
                                                 } else {
                                                     Color.clear.frame(width: 28, height: 28)
@@ -570,12 +569,10 @@ struct ContentView: View {
                 .disabled(draft.changes.isEmpty || draft.calculating)
                 QuietButton(symbol: "doc.on.doc", help: "Compare", action: draft.chooseBaseline)
                 QuietButton(symbol: "square.and.arrow.down", help: "Save", action: draft.save)
-                    .disabled(draft.loading || draft.writing)
                 QuietButton(symbol: "checkmark.circle", help: "Commit") { draft.prepareCommit() }
-
-                    .disabled(draft.repository == nil || draft.loading || draft.writing)
+                    .disabled(draft.repository == nil)
                 QuietButton(symbol: "arrow.up", help: "Push", action: draft.preparePush)
-                    .disabled(draft.repository == nil || draft.loading || draft.writing)
+                    .disabled(draft.repository == nil)
             }
         }
         .sheet(isPresented: Binding(get: { draft.commitPreview != nil }, set: { if !$0 { draft.commitPreview = nil } })) {
@@ -698,24 +695,37 @@ struct NativeEditor: NSViewRepresentable {
         var lastFormatted: Bool?
         var projection = TextProjection("", hiding: [])
         var activeParagraph: NSRange?
+        var markerRanges: [NSRange] = []
+        var styledText = NSAttributedString(string: "")
+        var typingAttributes: [NSAttributedString.Key: Any] = [:]
         var rendering = false
         init(draft: Draft) { self.draft = draft }
 
         func render(cursor: Int? = nil, force: Bool = false) {
             guard let editor = draft.editor else { return }
-            guard force || lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize || lastFormatted != draft.formatted else { return }
+            let contentChanged = lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing
+            let styleChanged = contentChanged || lastFontSize != draft.fontSize || lastFormatted != draft.formatted
+            guard force || styleChanged else { return }
             let oldSelection = projection.sourceRange(editor.selectedRange())
             let sourceSelection = cursor.map { NSRange(location: $0, length: 0) } ?? document.sourceRange(for: oldSelection)
             rendering = true
             defer { rendering = false }
-            document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
-            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize, formatted: draft.formatted)
-            let hidden = draft.formatted ? MarkdownStyle.hiddenMarkers(in: document, original: draft.baseline, current: draft.text, activeParagraph: activeParagraph) : []
+            if contentChanged { document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing) }
+            if styleChanged {
+                let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize, formatted: draft.formatted)
+                styledText = rendered.text
+                typingAttributes = rendered.typing
+                markerRanges = draft.formatted ? MarkdownStyle.hiddenMarkers(in: document, original: draft.baseline, current: draft.text, activeParagraph: nil) : []
+            }
+            let hidden = markerRanges.filter { marker in
+                guard let activeParagraph, let source = document.sourceRange(for: marker) else { return true }
+                return NSIntersectionRange(source, activeParagraph).length == 0
+            }
             projection = TextProjection(document.text, hiding: hidden)
-            let display = NSMutableAttributedString(attributedString: rendered.text)
+            let display = NSMutableAttributedString(attributedString: styledText)
             for range in hidden.sorted(by: { $0.location > $1.location }) { display.deleteCharacters(in: range) }
             editor.textStorage?.setAttributedString(display)
-            editor.typingAttributes = rendered.typing
+            editor.typingAttributes = typingAttributes
             let selection: NSRange
             if let sourceSelection {
                 let start = document.displayOffset(for: min(sourceSelection.location, draft.text.utf16.count))

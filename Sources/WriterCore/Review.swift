@@ -9,6 +9,7 @@ public struct Change: Equatable, Sendable, Identifiable {
 
 public enum Review {
     public static func changes(from original: String, to current: String) -> [Change] {
+        guard original != current else { return [] }
         let before = tokens(original)
         let after = tokens(current)
         let difference = after.difference(from: before)
@@ -48,8 +49,18 @@ public enum Review {
         return result
     }
 
+    public static func reversed(_ changes: [Change]) -> [Change] {
+        var offset = 0
+        return changes.map { change in
+            let range = NSRange(location: change.range.location + offset, length: change.original.utf16.count)
+            offset += change.original.utf16.count - change.replacement.utf16.count
+            return Change(id: change.id, range: range, original: change.replacement, replacement: change.original)
+        }
+    }
+
+    private static let expression = try! NSRegularExpression(pattern: #"[\p{L}\p{M}\p{N}_]+|\s+|[^\p{L}\p{M}\p{N}_\s]"#)
+
     private static func tokens(_ text: String) -> [String] {
-        let expression = try! NSRegularExpression(pattern: #"[\p{L}\p{M}\p{N}_]+|\s+|[^\p{L}\p{M}\p{N}_\s]"#)
         let source = text as NSString
         return expression.matches(in: text, range: NSRange(location: 0, length: source.length)).map { source.substring(with: $0.range) }
     }
