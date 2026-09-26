@@ -54,6 +54,11 @@ Outside, the grass held a thousand drops of light. She opened the door.
 
 @MainActor
 final class Draft: ObservableObject {
+    @Published var fontSize = UserDefaults.standard.object(forKey: "proseFontSize") as? Double ?? 20 {
+        didSet { UserDefaults.standard.set(fontSize, forKey: "proseFontSize") }
+    }
+    func resizeText(_ step: Double) { fontSize = min(36, max(12, fontSize + step)) }
+
     @Published var text = sampleDraft
     @Published var baseline = sampleOriginal
     @Published var title = "First light"
@@ -397,6 +402,11 @@ struct WriterApp: App {
                 Button("Save", action: draft.save).keyboardShortcut("s").disabled(draft.loading || draft.writing)
                 Button("Save Draft Copy…", action: draft.saveCopy).keyboardShortcut("s", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .toolbar) {
+                Button("Larger Text") { draft.resizeText(2) }.keyboardShortcut("+")
+                Button("Smaller Text") { draft.resizeText(-2) }.keyboardShortcut("-")
+                Button("Actual Size") { draft.fontSize = 20 }.keyboardShortcut("0")
+            }
         }
     }
 }
@@ -404,7 +414,7 @@ struct WriterApp: App {
 struct ContentView: View {
     @ObservedObject var draft: Draft
     var body: some View {
-        HStack(spacing: 0) {
+        HSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     Text("Manuscript")
@@ -419,37 +429,51 @@ struct ContentView: View {
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
                 if draft.repository != nil {
-                    List(selection: Binding<String?>(get: { draft.sidebarPath }, set: { path in
-                        if let file = draft.repository?.files.first(where: { $0.path == path }) { draft.selectFile(file) }
-                    })) {
-                        ForEach(["Front matter", "Chapters", "Back matter"], id: \.self) { section in
-                            let files = draft.visibleFiles.filter { $0.section == section }
-                            if !files.isEmpty {
-                                Section(section) {
-                                    ForEach(files) { file in
-                                        HStack {
-                                            Text(file.title).font(.system(size: 14, design: .serif)).lineLimit(1)
-                                            Spacer()
-                                            if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                QuietButton(symbol: "checkmark.circle", help: "Commit") {
-                                                    draft.prepareCommit(path: file.path)
+                    ScrollViewReader { scroll in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                                ForEach(["Front matter", "Chapters", "Back matter"], id: \.self) { section in
+                                    let files = draft.visibleFiles.filter { $0.section == section }
+                                    if !files.isEmpty {
+                                        Text(section).font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 6)
+                                        ForEach(files) { file in
+                                            HStack(spacing: 4) {
+                                                Button { draft.selectFile(file) } label: {
+                                                    Text(file.title).font(.system(size: 14, design: .serif))
+                                                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                                        .frame(height: 34).contentShape(Rectangle())
+                                                }.buttonStyle(.plain)
+                                                    .accessibilityAddTraits(file.path == draft.sidebarPath ? .isSelected : [])
+                                                if file.changed || (file.path == draft.activePath && draft.unsaved) {
+                                                    QuietButton(symbol: "checkmark.circle", help: "Commit") {
+                                                        draft.prepareCommit(path: file.path)
+                                                    }
+                                                    .disabled(draft.loading || draft.writing)
+                                                    .accessibilityLabel("Commit " + file.title)
+                                                } else {
+                                                    Color.clear.frame(width: 28, height: 28)
                                                 }
-                                                .disabled(draft.loading || draft.writing)
-                                                .accessibilityLabel("Commit " + file.title)
                                             }
-                                        }.accessibilityElement(children: .contain)
-                                        .accessibilityActions {
-                                            if file.changed || (file.path == draft.activePath && draft.unsaved) {
-                                                Button("Commit") { draft.prepareCommit(path: file.path) }
-                                            }
+                                            .padding(.leading, 12).padding(.trailing, 6).frame(height: 34)
+                                            .background(file.path == draft.sidebarPath ? Color.black.opacity(0.045) : .clear,
+                                                        in: RoundedRectangle(cornerRadius: 9))
+                                            .id(file.path)
                                         }
-                                        .padding(.vertical, 2).tag(file.path).listRowSeparator(.hidden).listRowBackground(Color.clear).help(file.path + (file.changed ? " — local changes" : ""))
                                     }
                                 }
-                            }
+                            }.padding(.horizontal, 8).padding(.bottom, 8)
                         }
-                    }.listStyle(.sidebar)
-                        .scrollContentBackground(.hidden)
+                        .onMoveCommand { direction in
+                            guard direction == .up || direction == .down, !draft.visibleFiles.isEmpty else { return }
+                            let files = draft.visibleFiles
+                            let index = files.firstIndex { $0.path == draft.sidebarPath } ?? 0
+                            let next = files[min(files.count - 1, max(0, index + (direction == .up ? -1 : 1)))]
+                            draft.selectFile(next)
+                            scroll.scrollTo(next.path)
+                        }
+                    }
                     if draft.visibleFiles.isEmpty {
                         Text("No changed chapters").font(.callout).foregroundStyle(.secondary).padding(16)
                     }
@@ -460,8 +484,8 @@ struct ContentView: View {
                 }
                 Text("\(draft.repository?.files.count ?? 1) files · \(draft.repository?.files.filter(\.changed).count ?? 0) changed")
                     .font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 16)
-            }.frame(width: 245).background(Paper.margin)
-            Rectangle().fill(Paper.accent.opacity(0.12)).frame(width: 1)
+            }.frame(minWidth: 210, idealWidth: 245, maxWidth: 440).background(Paper.margin)
+                .layoutPriority(1)
             VStack(spacing: 0) {
                 NativeEditor(draft: draft).disabled(draft.loading || draft.writing)
                 HStack {
@@ -530,6 +554,19 @@ struct ContentView: View {
 }
 
 final class ProseTextView: NSTextView {
+    var resizeText: ((Double) -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .control, .option]) == .command {
+            switch event.charactersIgnoringModifiers {
+            case "=", "+": resizeText?(2); return true
+            case "-": resizeText?(-2); return true
+            default: break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         textContainerInset = NSSize(width: max(48, (newSize.width - 760) / 2), height: 36)
@@ -542,6 +579,7 @@ struct NativeEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         let editor = ProseTextView(usingTextLayoutManager: true)
+        editor.resizeText = { [weak draft] step in draft?.resizeText(step) }
         editor.isRichText = false
         editor.allowsUndo = true
         editor.isAutomaticQuoteSubstitutionEnabled = false
@@ -575,23 +613,25 @@ struct NativeEditor: NSViewRepresentable {
         var lastText: String?
         var lastOriginal: String?
         var lastReview: Bool?
+        var lastFontSize: Double?
         var rendering = false
         init(draft: Draft) { self.draft = draft }
 
         func render(cursor: Int? = nil) {
             guard let editor = draft.editor else { return }
-            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing else { return }
+            guard lastText != draft.text || lastOriginal != draft.baseline || lastReview != draft.reviewing || lastFontSize != draft.fontSize else { return }
             let sourceCursor = cursor ?? document.sourceRange(for: editor.selectedRange())?.location ?? 0
             rendering = true
             defer { rendering = false }
             document = ReviewDocument(original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
-            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing)
+            let rendered = ReviewAppearance.render(document, original: draft.baseline, current: draft.text, reviewing: draft.reviewing, fontSize: draft.fontSize)
             editor.textStorage?.setAttributedString(rendered.text)
             editor.typingAttributes = rendered.typing
             editor.setSelectedRange(NSRange(location: document.displayOffset(for: min(sourceCursor, draft.text.utf16.count)), length: 0))
             lastText = draft.text
             lastOriginal = draft.baseline
             lastReview = draft.reviewing
+            lastFontSize = draft.fontSize
         }
 
         func replace(_ range: NSRange, with replacement: String) {

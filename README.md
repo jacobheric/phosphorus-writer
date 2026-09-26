@@ -31,6 +31,10 @@ swiftc Sources/WriterCore/Review.swift Sources/WriterCore/ReviewDocument.swift s
 
 Review mode protects original passages. Selections crossing those protected regions cannot be replaced; switch Review off for broad edits. Typing currently undoes one input event at a time. Diff layout is rebuilt while typing in this prototype; incremental layout, composition input, and large-document performance remain follow-up work.
 
+## Reading layout
+
+Drag the sidebar divider to resize it. Chapter rows keep the same height whether they have changes or not. ⌘+ (or ⌘=) and ⌘− resize the writing text; ⌘0 restores the default. Text size is remembered across launches.
+
 ## Manuscript sidebar
 
 Open manuscript selects a Git repository. If it has a `manuscript/` folder, the sidebar lists its Markdown files under Front matter, Chapters, and Back matter. Otherwise it lists Markdown files throughout the repository. A small commit icon marks chapters with local changes, including unsaved edits. The filter icon toggles changed-only filtering. Button labels appear after a 150 ms hover.

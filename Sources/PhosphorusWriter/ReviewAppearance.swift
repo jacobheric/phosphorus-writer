@@ -2,11 +2,11 @@ import AppKit
 import WriterCore
 
 enum ReviewAppearance {
-    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
+    static func render(_ document: ReviewDocument, original: String, current: String, reviewing: Bool = true, fontSize: Double = 20) -> (text: NSAttributedString, typing: [NSAttributedString.Key: Any]) {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 8
-        paragraph.paragraphSpacing = 8
-        let font = NSFont(name: "Charter", size: 20) ?? .systemFont(ofSize: 20)
+        paragraph.lineSpacing = fontSize * 0.4
+        paragraph.paragraphSpacing = fontSize * 0.4
+        let font = NSFont(name: "Charter", size: fontSize) ?? .systemFont(ofSize: fontSize)
         let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Paper.ink, .paragraphStyle: paragraph]
         let result = NSMutableAttributedString(string: document.text, attributes: base)
         for span in document.spans {
