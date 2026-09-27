@@ -15,7 +15,7 @@ struct CommitReview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(preview.chapter == nil ? "Commit" : "Commit chapter").font(.title2)
+                Text(preview.partial ? "Commit change" : preview.chapter == nil ? "Commit" : "Commit chapter").font(.title2)
                 Spacer()
                 Text("\(preview.files.count) \(preview.files.count == 1 ? "file" : "files") · \(preview.branch)")
                     .font(.callout).foregroundStyle(.secondary)
@@ -34,7 +34,7 @@ struct CommitReview: View {
                     Divider()
                 }
                 if preview.files.isEmpty {
-                    Text("No staged changes").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Text("No changes").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 if let file = selectedFile {
                     VStack(alignment: .leading, spacing: 0) {
@@ -64,10 +64,6 @@ struct CommitReview: View {
             }
             Divider()
             HStack(spacing: 16) {
-                Button("Stage all") { draft.changeStaging() }.help("Stage all")
-                if let file = selectedFile {
-                    Button("Unstage") { draft.changeStaging(unstage: file.path) }.help("Unstage file")
-                }
                 TextField("Message", text: $draft.commitMessage).textFieldStyle(.roundedBorder)
                 Button("Cancel") { draft.commitPreview = nil }.keyboardShortcut(.cancelAction)
                 Button(draft.writing ? "Committing…" : "Commit", action: draft.commit)

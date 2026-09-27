@@ -19,6 +19,8 @@ public struct ManuscriptRepository: Sendable {
         let root = URL(fileURLWithPath: rootPath)
         let status = try git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], at: root)
         let statuses = parseStatus(status)
+        let changed = Set(try git(["diff", "HEAD", "--name-only", "--no-renames", "-z"], at: root).split(separator: "\0").map(String.init))
+            .union(statuses.filter { $0.value == "??" }.keys)
         let listed = try git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], at: root)
         let paths = Set(listed.split(separator: "\0").map(String.init)).union(statuses.keys)
         let hasManuscript = FileManager.default.fileExists(atPath: root.appendingPathComponent("manuscript").path)
@@ -27,7 +29,7 @@ public struct ManuscriptRepository: Sendable {
             let contents = try? String(contentsOf: url, encoding: .utf8)
             let heading = contents?.components(separatedBy: .newlines).first(where: { $0.hasPrefix("# ") })
             let section = path.contains("/frontmatter/") ? "Front matter" : path.contains("/backmatter/") ? "Back matter" : "Chapters"
-            return ManuscriptFile(path: path, title: heading.map { String($0.dropFirst(2)) } ?? url.deletingPathExtension().lastPathComponent, section: section, changed: statuses[path] != nil, status: statuses[path] ?? "")
+            return ManuscriptFile(path: path, title: heading.map { String($0.dropFirst(2)) } ?? url.deletingPathExtension().lastPathComponent, section: section, changed: changed.contains(path), status: statuses[path] ?? "")
         }.sorted { first, second in
             let order = ["Front matter": 0, "Chapters": 1, "Back matter": 2]
             if first.section != second.section { return order[first.section, default: 1] < order[second.section, default: 1] }
@@ -46,7 +48,7 @@ public struct ManuscriptRepository: Sendable {
         } else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let original = try RepositoryWrites.stagedText(at: root, path: file.path)
+        let original = try RepositoryWrites.committedText(at: root, path: file.path)
         return (current, original)
     }
 
