@@ -30,6 +30,11 @@ struct CheckReview {
                     return (document.text as NSString).substring(with: span.display)
                 }.joined()
                 precondition(reconstructed == current)
+                let approved = NSMutableString(string: original)
+                for hunk in document.hunks.reversed() {
+                    approved.replaceCharacters(in: hunk.original, with: (current as NSString).substring(with: hunk.current))
+                }
+                precondition(approved as String == current)
                 for span in document.spans {
                     if let source = span.source, span.display.length > 0 {
                         precondition(document.sourceRange(for: span.display) == source)

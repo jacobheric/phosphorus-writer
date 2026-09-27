@@ -18,6 +18,7 @@ public struct CommitPreview: Sendable {
     public let branch: String
     public let chapter: String?
     public let files: [CommitFile]
+    public var partial = false
 }
 
 public struct PushPreview: Sendable {
@@ -37,7 +38,7 @@ public enum RepositoryWrites {
         return data
     }
 
-    public static func prepareCommit(at root: URL, path: String?) throws -> CommitPreview {
+    public static func prepareCommit(at root: URL, path: String?, stagedOnly: Bool = false) throws -> CommitPreview {
         let branch = try git(["symbolic-ref", "--short", "HEAD"], at: root).trimmingCharacters(in: .newlines)
         guard try git(["ls-files", "-u"], at: root).isEmpty else { throw failure("Resolve conflicts first.") }
         let markers = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]
@@ -50,7 +51,14 @@ public enum RepositoryWrites {
         let indexTree = try git(["write-tree"], at: root)
         return try withIndex { index in
             try git(["read-tree", path == nil ? indexTree : head], at: root, index: index)
-            try git(path.map { ["add", "--", ":(literal)" + $0] } ?? ["add", "-A"], at: root, index: index)
+            if stagedOnly {
+                if let path {
+                    let changed = try git(["diff", "--name-only", head, indexTree, "--", ":(literal)" + path], at: root)
+                    if !changed.isEmpty { try git(["restore", "--source=" + indexTree, "--staged", "--", ":(literal)" + path], at: root, index: index) }
+                }
+            } else {
+                try git(path.map { ["add", "--", ":(literal)" + $0] } ?? ["add", "-A"], at: root, index: index)
+            }
             let tree = try git(["write-tree"], at: root, index: index)
             let records = try git(["diff", "--raw", "--no-abbrev", "--no-renames", "-z", head, tree], at: root)
                 .split(separator: "\0").map(String.init)
@@ -76,8 +84,140 @@ public enum RepositoryWrites {
                 return CommitFile(path: entry.path, status: fields[4], original: text(fields[2], mode: fields[0]), current: text(fields[3], mode: fields[1]),
                                   oldMode: fields[0] == "000000" ? "" : fields[0], newMode: fields[1] == "000000" ? "" : fields[1])
             }
-            guard !files.isEmpty else { throw failure("No changes to commit.") }
+            guard stagedOnly || !files.isEmpty else { throw failure("No changes to commit.") }
             return CommitPreview(tree: tree, indexTree: indexTree, head: head, branch: branch, chapter: path, files: files)
+        }
+    }
+
+    public static func committedText(at root: URL, path: String) throws -> String {
+        let records = try git(["ls-tree", "-z", "HEAD", "--", ":(literal)" + path], at: root)
+        guard !records.isEmpty else { return "" }
+        let data = try gitData(["show", "HEAD:" + path], at: root)
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw failure("This file is not UTF-8 text.") }
+        return text
+    }
+
+    public static func prepareChange(_ hunk: ReviewHunk, original: String, current: String, at root: URL, path: String) throws -> CommitPreview {
+        let preview = try prepareCommit(at: root, path: path)
+        guard let file = preview.files.first, file.original == original, file.current == current,
+              ReviewDocument(original: original, current: current, reviewing: true).hunks.contains(hunk),
+              ["", "100644", "100755"].contains(file.oldMode),
+              ["", "100644", "100755"].contains(file.newMode) else { throw failure("This change moved. Reopen the chapter and try again.") }
+        let approved = (original as NSString).replacingCharacters(in: hunk.original, with: (current as NSString).substring(with: hunk.current))
+        let mode = file.newMode.isEmpty && approved.isEmpty ? "" : (file.oldMode.isEmpty ? file.newMode : file.oldMode)
+        return try withIndex { index in
+            try git(["read-tree", preview.head], at: root, index: index)
+            try writeEntry(approved, mode: mode, path: path, at: root, index: index)
+            let tree = try git(["write-tree"], at: root, index: index)
+            let change = CommitFile(path: path, status: mode.isEmpty ? "D" : file.oldMode.isEmpty ? "A" : "M", original: original, current: approved, oldMode: file.oldMode, newMode: mode)
+            return CommitPreview(tree: tree, indexTree: preview.indexTree, head: preview.head, branch: preview.branch, chapter: path, files: [change], partial: true)
+        }
+    }
+
+    private static func writeEntry(_ text: String, mode: String, path: String, at root: URL, index: String) throws {
+        if mode.isEmpty {
+            try git(["update-index", "--force-remove", "--", path], at: root, index: index)
+        } else {
+            let hash = try gitData(["hash-object", "-w", "--stdin"], at: root, input: Data(text.utf8))
+            try git(["update-index", "--add", "--cacheinfo", mode, String(decoding: hash, as: UTF8.self).trimmingCharacters(in: .newlines), path], at: root, index: index)
+        }
+    }
+
+    private static func mergeApproval(_ file: CommitFile, at root: URL, index: String) throws {
+        let entry = try indexEntry(at: root, path: file.path, index: index)
+        guard let original = file.original, let approved = file.current else { throw failure("Could not read this change.") }
+        if entry.text == original || entry.text == approved {
+            let mode = entry.mode == file.oldMode ? file.newMode : entry.mode
+            guard !mode.isEmpty || approved.isEmpty else { throw failure("This file was removed in another Git app. Commit the chapter together instead.") }
+            try writeEntry(approved, mode: mode, path: file.path, at: root, index: index)
+            return
+        }
+        guard entry.mode == file.oldMode, !file.newMode.isEmpty else { throw failure("This change overlaps changes in another Git app. Commit the chapter together instead.") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let inputs = [entry.text, original, approved]
+        let paths = try inputs.enumerated().map { offset, text in
+            let url = directory.appendingPathComponent(String(offset))
+            try Data(text.utf8).write(to: url)
+            return url.path
+        }
+        let merged: Data
+        do { merged = try gitData(["merge-file", "-p"] + paths, at: root) }
+        catch { throw failure("This change overlaps changes in another Git app. Commit the chapter together instead.") }
+        try writeEntry(String(decoding: merged, as: UTF8.self), mode: entry.mode, path: file.path, at: root, index: index)
+    }
+
+    public static func stagedText(at root: URL, path: String) throws -> String {
+        try indexEntry(at: root, path: path).text
+    }
+
+    public static func stage(_ hunk: ReviewHunk, original: String, current: String, at root: URL, path: String) throws {
+        try updateIndex(at: root) { index in
+            let entry = try indexEntry(at: root, path: path, index: index)
+            guard entry.text == original else { throw failure("Staging changed. Refresh before approving this change.") }
+            let url = root.appendingPathComponent(path)
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            if exists {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular else { throw failure("Only regular text files support paragraph staging.") }
+            }
+            let disk = exists ? try String(contentsOf: url, encoding: .utf8) : ""
+            guard disk == current else { throw failure("This file changed on disk. Reopen it before staging.") }
+            let document = ReviewDocument(original: original, current: current, reviewing: true)
+            guard document.hunks.contains(hunk) else { throw failure("This change is out of date. Try again.") }
+            let replacement = (current as NSString).substring(with: hunk.current)
+            let staged = (original as NSString).replacingCharacters(in: hunk.original, with: replacement)
+            if !exists && staged.isEmpty {
+                try git(["update-index", "--force-remove", "--", path], at: root, index: index)
+            } else {
+                let mode: String
+                if entry.mode.isEmpty {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    mode = ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o111 != 0 ? "100755" : "100644"
+                } else { mode = entry.mode }
+                let hash = String(decoding: try gitData(["hash-object", "-w", "--stdin", "--path=" + path], at: root, input: Data(staged.utf8)), as: UTF8.self).trimmingCharacters(in: .newlines)
+                try git(["update-index", "--add", "--cacheinfo", mode, hash, path], at: root, index: index)
+            }
+        }
+    }
+
+    public static func stageAll(at root: URL, path: String?) throws {
+        try updateIndex(at: root) { index in
+            try git(path.map { ["add", "--", ":(literal)" + $0] } ?? ["add", "-A"], at: root, index: index)
+        }
+    }
+
+    public static func unstage(at root: URL, path: String) throws {
+        try updateIndex(at: root) { index in
+            try git(["restore", "--source=HEAD", "--staged", "--", ":(literal)" + path], at: root, index: index)
+        }
+    }
+
+    private static func indexEntry(at root: URL, path: String, index: String? = nil) throws -> (text: String, mode: String) {
+        let records = try git(["ls-files", "--stage", "-z", "--", ":(literal)" + path], at: root, index: index).split(separator: "\0")
+        guard !records.isEmpty else { return ("", "") }
+        let fields = records[0].prefix(while: { $0 != "\t" }).split(separator: " ")
+        guard records.count == 1, fields.count == 3, fields[2] == "0", ["100644", "100755"].contains(fields[0]) else { throw failure("Resolve conflicts or file type changes before staging paragraphs.") }
+        let data = try gitData(["cat-file", "blob", String(fields[1])], at: root)
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw failure("This file is not UTF-8 text.") }
+        return (text, String(fields[0]))
+    }
+
+    private static func updateIndex(at root: URL, action: (String) throws -> Void) throws {
+        let head = try head(at: root)
+        let indexPath = try git(["rev-parse", "--path-format=absolute", "--git-path", "index"], at: root)
+        let indexURL = URL(fileURLWithPath: indexPath)
+        let original = try Data(contentsOf: indexURL)
+        try withIndex { index in
+            try original.write(to: URL(fileURLWithPath: index))
+            try action(index)
+            let updated = try Data(contentsOf: URL(fileURLWithPath: index))
+            let lock = URL(fileURLWithPath: indexPath + ".lock")
+            try Data().write(to: lock, options: .withoutOverwriting)
+            defer { try? FileManager.default.removeItem(at: lock) }
+            guard try Data(contentsOf: indexURL) == original, try Self.head(at: root) == head else { throw failure("Git changed. Try again.") }
+            try updated.write(to: indexURL, options: .atomic)
         }
     }
 
@@ -98,7 +238,9 @@ public enum RepositoryWrites {
         guard try Data(contentsOf: indexURL) == originalIndex else { throw failure("Git changed. Reopen this review.") }
         try withIndex { nextIndex in
             try git(["read-tree", preview.chapter == nil ? preview.tree : preview.indexTree], at: root, index: nextIndex)
-            if let path = preview.chapter {
+            if preview.partial, let file = preview.files.first {
+                try mergeApproval(file, at: root, index: nextIndex)
+            } else if let path = preview.chapter {
                 try git(["restore", "--source=" + preview.tree, "--staged", "--", ":(literal)" + path], at: root, index: nextIndex)
             }
             let nextData = try Data(contentsOf: URL(fileURLWithPath: nextIndex))

@@ -15,7 +15,7 @@ struct CommitReview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(preview.chapter == nil ? "Commit" : "Commit chapter").font(.title2)
+                Text(preview.partial ? "Commit change" : preview.chapter == nil ? "Commit" : "Commit chapter").font(.title2)
                 Spacer()
                 Text("\(preview.files.count) \(preview.files.count == 1 ? "file" : "files") · \(preview.branch)")
                     .font(.callout).foregroundStyle(.secondary)
@@ -32,6 +32,9 @@ struct CommitReview: View {
                     .listStyle(.sidebar).scrollContentBackground(.hidden)
                     .frame(width: 230).background(Paper.margin)
                     Divider()
+                }
+                if preview.files.isEmpty {
+                    Text("No changes").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 if let file = selectedFile {
                     VStack(alignment: .leading, spacing: 0) {
@@ -65,7 +68,7 @@ struct CommitReview: View {
                 Button("Cancel") { draft.commitPreview = nil }.keyboardShortcut(.cancelAction)
                 Button(draft.writing ? "Committing…" : "Commit", action: draft.commit)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(preview.files.isEmpty || draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(24)
         }
         .frame(width: preview.chapter == nil ? 940 : 760, height: 620)
